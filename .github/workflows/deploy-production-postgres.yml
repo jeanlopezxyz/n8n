@@ -136,6 +136,10 @@ jobs:
               # Esperar a que PostgreSQL esté listo
               sleep 15
 
+              # Pull la imagen más reciente desde el registry
+              echo "📦 Descargando imagen desde GitHub Registry..."
+              podman pull ghcr.io/labjp-xyz/n8n:${{ inputs.image_tag || 'latest' }}
+
               # Iniciar n8n
               echo "🚀 Iniciando n8n..."
               podman run -d \
@@ -153,7 +157,7 @@ jobs:
                 -p 5678:5678 \
                 -v n8n_data:/home/node/.n8n \
                 --restart always \
-                docker.io/n8nio/n8n:latest
+                ghcr.io/labjp-xyz/n8n:${{ inputs.image_tag || 'latest' }}
             else
               echo "✅ Usando podman-compose"
               podman-compose -f docker-compose-postgres.yml up -d
