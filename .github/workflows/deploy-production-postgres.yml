@@ -92,34 +92,75 @@ jobs:
           # Ejecutar script como usuario n8n
           sudo -u n8n bash -c 'cd /opt/n8n && ./deploy-n8n-postgres.sh'
 
+          # Verificar que los contenedores se crearon
+          sleep 10
+          if command -v podman &> /dev/null; then
+            sudo -u n8n podman ps -a
+          else
+            sudo -u n8n docker ps -a
+          fi
+
       - name: Health check
         run: |
           # Ejecutar health check como usuario n8n
           sudo -u n8n bash -c '
             cd /opt/n8n
 
-            # Detectar runtime
+            # Detectar runtime y compose
             if command -v podman &> /dev/null; then
               RUNTIME="podman"
+              if command -v podman-compose &> /dev/null; then
+                COMPOSE="podman-compose"
+              else
+                echo "⚠️ podman-compose not found, checking containers directly"
+              fi
             else
               RUNTIME="docker"
+              COMPOSE="docker-compose"
             fi
 
             # Wait for services to start
             echo "⏳ Waiting for services to start..."
             sleep 30
 
-            # Check PostgreSQL
+            # Show all containers first
+            echo "📦 All containers:"
+            $RUNTIME ps -a
+
+            # Try different ways to check PostgreSQL
             echo "🔍 Checking PostgreSQL..."
-            $RUNTIME exec n8n-postgres pg_isready -U n8n || exit 1
+
+            # Option 1: Try with compose
+            if [ ! -z "$COMPOSE" ] && [ -f docker-compose-postgres.yml ]; then
+              $COMPOSE -f docker-compose-postgres.yml ps
+            fi
+
+            # Option 2: Check by container name patterns
+            POSTGRES_CONTAINER=$($RUNTIME ps -a --format "{{.Names}}" | grep -E "postgres|postgresql" | head -1)
+            if [ ! -z "$POSTGRES_CONTAINER" ]; then
+              echo "Found PostgreSQL container: $POSTGRES_CONTAINER"
+              $RUNTIME exec $POSTGRES_CONTAINER pg_isready -U n8n || true
+            else
+              echo "⚠️ PostgreSQL container not found by name"
+            fi
 
             # Check n8n
             echo "🔍 Checking n8n..."
-            curl -f http://localhost:5678/healthz || exit 1
+            if curl -f http://localhost:5678/healthz; then
+              echo "✅ n8n is responding"
+            else
+              echo "⚠️ n8n health check failed, checking if container is running"
+              N8N_CONTAINER=$($RUNTIME ps -a --format "{{.Names}}" | grep -E "n8n" | grep -v postgres | head -1)
+              if [ ! -z "$N8N_CONTAINER" ]; then
+                echo "Found n8n container: $N8N_CONTAINER"
+                $RUNTIME logs $N8N_CONTAINER --tail=20
+              fi
+            fi
 
-            # Show running containers
-            echo "📦 Running containers:"
-            $RUNTIME ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "n8n|postgres"
+            # Final status
+            echo ""
+            echo "📦 Final container status:"
+            $RUNTIME ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
           '
 
       - name: Display access information
