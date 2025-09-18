@@ -70,24 +70,21 @@ jobs:
 
       - name: Stop existing containers
         run: |
-          # Ejecutar como usuario n8n
+          # Ejecutar como usuario n8n - SOLO PODMAN
           sudo -u n8n bash -c '
             cd /opt/n8n
 
-            # Detectar si es podman o docker
-            if command -v podman-compose &> /dev/null; then
-              COMPOSE="podman-compose"
-            else
-              COMPOSE="docker-compose"
-            fi
+            # Detener y eliminar contenedores existentes si hay
+            podman stop n8n n8n-postgres 2>/dev/null || true
+            podman rm n8n n8n-postgres 2>/dev/null || true
 
-            # Stop existing services if running
-            if [ -f docker-compose-postgres.yml ]; then
-              $COMPOSE -f docker-compose-postgres.yml down 2>/dev/null || true
+            # Si existe podman-compose, usarlo para limpiar
+            if command -v podman-compose &> /dev/null && [ -f docker-compose-postgres.yml ]; then
+              podman-compose -f docker-compose-postgres.yml down 2>/dev/null || true
             fi
           '
 
-      - name: Deploy with Docker Compose
+      - name: Deploy with Podman
         run: |
           # Ejecutar deployment como usuario n8n con podman directo
           sudo -u n8n bash -c '
@@ -138,7 +135,7 @@ jobs:
                 -p 5678:5678 \
                 -v n8n_data:/home/node/.n8n \
                 --restart always \
-                docker.io/n8nio/n8n:latest
+                ghcr.io/jeanlopezxyz/n8n:latest
             else
               echo "✅ Usando podman-compose"
               podman-compose -f docker-compose-postgres.yml up -d
