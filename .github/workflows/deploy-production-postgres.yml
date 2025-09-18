@@ -33,85 +33,94 @@ jobs:
 
       - name: Create deployment directory
         run: |
-          # El runner ya está en el servidor, no necesita SSH
-          mkdir -p /opt/n8n
+          # Crear directorio con permisos para usuario n8n
+          sudo mkdir -p /opt/n8n
+          sudo chown n8n:n8n /opt/n8n
 
       - name: Copy deployment files
         run: |
-          # Copiar archivos localmente (el runner está en el servidor)
-          cp docker-compose-postgres.yml /opt/n8n/
-          cp deploy-n8n-postgres.sh /opt/n8n/
-          chmod +x /opt/n8n/deploy-n8n-postgres.sh
+          # Copiar archivos y asignar al usuario n8n
+          sudo cp docker-compose-postgres.yml /opt/n8n/
+          sudo cp deploy-n8n-postgres.sh /opt/n8n/
+          sudo chown n8n:n8n /opt/n8n/*
+          sudo chmod +x /opt/n8n/deploy-n8n-postgres.sh
 
       - name: Setup environment variables
         run: |
-          cd /opt/n8n
+          # Ejecutar como usuario n8n
+          sudo -u n8n bash -c '
+            cd /opt/n8n
 
-          # Generate secure passwords if not exists
-          if [ ! -f .env ]; then
-            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" > .env
-            echo "N8N_BASIC_AUTH_PASSWORD=$(openssl rand -hex 12)" >> .env
-            echo "N8N_ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
-            echo "N8N_HOST=$(hostname -f)" >> .env
-            echo "TZ=America/Mexico_City" >> .env
-            echo "🔐 Generated new credentials in .env file"
-          else
-            echo "✅ Using existing .env file"
-          fi
+            # Generate secure passwords if not exists
+            if [ ! -f .env ]; then
+              echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" > .env
+              echo "N8N_BASIC_AUTH_PASSWORD=$(openssl rand -hex 12)" >> .env
+              echo "N8N_ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
+              echo "N8N_HOST=$(hostname -f)" >> .env
+              echo "TZ=America/Mexico_City" >> .env
+              echo "🔐 Generated new credentials in .env file"
+            else
+              echo "✅ Using existing .env file"
+            fi
 
-          # Load and display non-sensitive config
-          source .env
-          echo "📍 Host configured: $N8N_HOST"
+            # Load and display non-sensitive config
+            source .env
+            echo "📍 Host configured: $N8N_HOST"
+          '
 
       - name: Stop existing containers
         run: |
-          cd /opt/n8n
+          # Ejecutar como usuario n8n
+          sudo -u n8n bash -c '
+            cd /opt/n8n
 
-          # Detectar si es podman o docker
-          if command -v podman-compose &> /dev/null; then
-            COMPOSE="podman-compose"
-          else
-            COMPOSE="docker-compose"
-          fi
+            # Detectar si es podman o docker
+            if command -v podman-compose &> /dev/null; then
+              COMPOSE="podman-compose"
+            else
+              COMPOSE="docker-compose"
+            fi
 
-          # Stop existing services if running
-          if [ -f docker-compose-postgres.yml ]; then
-            $COMPOSE -f docker-compose-postgres.yml down 2>/dev/null || true
-          fi
+            # Stop existing services if running
+            if [ -f docker-compose-postgres.yml ]; then
+              $COMPOSE -f docker-compose-postgres.yml down 2>/dev/null || true
+            fi
+          '
 
       - name: Deploy with Docker Compose
         run: |
-          cd /opt/n8n
-
-          # Deploy using the existing script
-          ./deploy-n8n-postgres.sh
+          # Ejecutar script como usuario n8n
+          sudo -u n8n bash -c 'cd /opt/n8n && ./deploy-n8n-postgres.sh'
 
       - name: Health check
         run: |
-          cd /opt/n8n
+          # Ejecutar health check como usuario n8n
+          sudo -u n8n bash -c '
+            cd /opt/n8n
 
-          # Detectar runtime
-          if command -v podman &> /dev/null; then
-            RUNTIME="podman"
-          else
-            RUNTIME="docker"
-          fi
+            # Detectar runtime
+            if command -v podman &> /dev/null; then
+              RUNTIME="podman"
+            else
+              RUNTIME="docker"
+            fi
 
-          # Wait for services to start
-          echo "⏳ Waiting for services to start..."
-          sleep 30
+            # Wait for services to start
+            echo "⏳ Waiting for services to start..."
+            sleep 30
 
-          # Check PostgreSQL
-          echo "🔍 Checking PostgreSQL..."
-          $RUNTIME exec n8n-postgres pg_isready -U n8n || exit 1
+            # Check PostgreSQL
+            echo "🔍 Checking PostgreSQL..."
+            $RUNTIME exec n8n-postgres pg_isready -U n8n || exit 1
 
-          # Check n8n
-          echo "🔍 Checking n8n..."
-          curl -f http://localhost:5678/healthz || exit 1
+            # Check n8n
+            echo "🔍 Checking n8n..."
+            curl -f http://localhost:5678/healthz || exit 1
 
-          # Show running containers
-          echo "📦 Running containers:"
-          $RUNTIME ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "n8n|postgres"
+            # Show running containers
+            echo "📦 Running containers:"
+            $RUNTIME ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "n8n|postgres"
+          '
 
       - name: Display access information
         run: |
