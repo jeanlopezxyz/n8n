@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: n8n-postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+      - POSTGRES_DB=n8n
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_backups:/backups
+    ports:
+      - "5432:5432"
+    networks:
+      - n8n-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    image: ghcr.io/jeanlopezxyz/n8n:latest
+    container_name: n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    networks:
+      - n8n-network
+    environment:
+      # Database Configuration - PostgreSQL
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+
+      # n8n Configuration
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-true}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-changeme}
+      - N8N_HOST=${N8N_HOST:-server1.labjp.xyz}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://server1.labjp.xyz:5678/}
+
+      # Execution Configuration
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
+      - EXECUTIONS_DATA_MAX_AGE=336
+      - EXECUTIONS_DATA_PRUNE=true
+
+      # Security
+      - N8N_SECURE_COOKIE=false
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+
+      # Timezone
+      - GENERIC_TIMEZONE=${TZ:-America/Mexico_City}
+      - TZ=${TZ:-America/Mexico_City}
+
+    volumes:
+      # Archivos locales y binarios
+      - n8n_files:/files
+      - n8n_custom:/home/node/.n8n/custom
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Servicio de backup automático
+  postgres-backup:
+    image: postgres:15-alpine
+    container_name: n8n-postgres-backup
+    restart: always
+    networks:
+      - n8n-network
+    environment:
+      - PGPASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+    volumes:
+      - postgres_backups:/backups
+    command: >
+      sh -c 'while true; do
+        pg_dump -h postgres -U n8n -d n8n > /backups/n8n_backup_$$(date +\%Y\%m\%d_\%H\%M\%S).sql;
+        find /backups -name "n8n_backup_*.sql" -mtime +7 -delete;
+        sleep 86400;
+      done'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  n8n-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  postgres_backups:
+    driver: local
+  n8n_files:
+    driver: local
+  n8n_custom:
+    driver: local
