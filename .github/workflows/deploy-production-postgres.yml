@@ -74,14 +74,23 @@ jobs:
           sudo -u n8n bash -c '
             cd /opt/n8n
 
-            # Detener y eliminar contenedores existentes si hay
-            podman stop n8n n8n-postgres 2>/dev/null || true
-            podman rm n8n n8n-postgres 2>/dev/null || true
+            echo "🛑 Deteniendo contenedores existentes..."
 
-            # Si existe podman-compose, usarlo para limpiar
-            if command -v podman-compose &> /dev/null && [ -f docker-compose-postgres.yml ]; then
-              podman-compose -f docker-compose-postgres.yml down 2>/dev/null || true
-            fi
+            # Listar todos los contenedores
+            podman ps -a
+
+            # Detener TODOS los contenedores de n8n y postgres
+            podman stop $(podman ps -q --filter "name=n8n") 2>/dev/null || true
+            podman stop $(podman ps -q --filter "name=postgres") 2>/dev/null || true
+
+            # Eliminar contenedores
+            podman rm -f n8n n8n-postgres 2>/dev/null || true
+            podman rm -f $(podman ps -aq --filter "name=n8n") 2>/dev/null || true
+            podman rm -f $(podman ps -aq --filter "name=postgres") 2>/dev/null || true
+
+            # Verificar que puertos estén libres
+            echo "🔍 Verificando puertos..."
+            netstat -tlnp 2>/dev/null | grep -E ":5432|:5678" || echo "Puertos libres"
           '
 
       - name: Deploy with Podman
@@ -102,18 +111,27 @@ jobs:
               # Crear red si no existe
               podman network create n8n-network 2>/dev/null || true
 
+              # Verificar si el puerto 5432 está en uso
+              if netstat -tlnp 2>/dev/null | grep -q ":5432"; then
+                echo "⚠️ Puerto 5432 en uso, usando PostgreSQL existente o puerto aleatorio"
+                # Intentar conectar al PostgreSQL existente o usar puerto diferente
+                POSTGRES_PORT=5433
+              else
+                POSTGRES_PORT=5432
+              fi
+
               # Iniciar PostgreSQL
-              echo "🗄️ Iniciando PostgreSQL..."
+              echo "🗄️ Iniciando PostgreSQL en puerto $POSTGRES_PORT..."
               podman run -d \
                 --name n8n-postgres \
                 --network n8n-network \
                 -e POSTGRES_USER=n8n \
                 -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-n8n_password}" \
                 -e POSTGRES_DB=n8n \
-                -p 5432:5432 \
+                -p ${POSTGRES_PORT}:5432 \
                 -v postgres_data:/var/lib/postgresql/data \
                 --restart always \
-                postgres:15-alpine
+                docker.io/library/postgres:15-alpine
 
               # Esperar a que PostgreSQL esté listo
               sleep 15
@@ -135,7 +153,7 @@ jobs:
                 -p 5678:5678 \
                 -v n8n_data:/home/node/.n8n \
                 --restart always \
-                ghcr.io/jeanlopezxyz/n8n:latest
+                docker.io/n8nio/n8n:latest
             else
               echo "✅ Usando podman-compose"
               podman-compose -f docker-compose-postgres.yml up -d
