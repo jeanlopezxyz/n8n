@@ -11,14 +11,6 @@ on:
         options:
           - production
           - staging
-      deployment_method:
-        description: 'Deployment method'
-        required: false
-        default: 'ssh'
-        type: choice
-        options:
-          - ssh
-          - self-hosted
   push:
     branches:
       - main
@@ -29,63 +21,10 @@ on:
       - '.github/workflows/deploy-production-postgres.yml'
 
 jobs:
-  deploy-production-ssh:
-    name: Deploy n8n with PostgreSQL (SSH)
-    if: ${{ github.event.inputs.deployment_method != 'self-hosted' }}
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'production' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup SSH with timeout
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H -t rsa ${{ secrets.PRODUCTION_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
-
-          # Configure SSH with strict timeout and options
-          cat > ~/.ssh/config <<EOF
-          Host production-server
-            HostName ${{ secrets.PRODUCTION_HOST }}
-            User ${{ secrets.SSH_USER }}
-            IdentityFile ~/.ssh/id_rsa
-            StrictHostKeyChecking yes
-            ConnectTimeout 10
-            ServerAliveInterval 5
-            ServerAliveCountMax 3
-            ControlMaster auto
-            ControlPath ~/.ssh/control-%r@%h:%p
-            ControlPersist 10m
-          EOF
-
-      - name: Deploy to server
-        run: |
-          # Create deployment directory
-          ssh production-server "mkdir -p /opt/n8n"
-
-          # Copy deployment files
-          scp docker-compose-postgres.yml deploy-n8n-postgres.sh production-server:/opt/n8n/
-
-          # Execute deployment
-          ssh production-server "cd /opt/n8n && chmod +x deploy-n8n-postgres.sh && ./deploy-n8n-postgres.sh"
-
-          # Health check
-          ssh production-server "cd /opt/n8n && sleep 30 && curl -f http://localhost:5678/healthz"
-
-      - name: Cleanup SSH
-        if: always()
-        run: |
-          rm -rf ~/.ssh/id_rsa
-          rm -rf ~/.ssh/config
-          rm -rf ~/.ssh/control-*
-
-  deploy-production-self-hosted:
-    name: Deploy n8n with PostgreSQL (Self-Hosted)
-    if: ${{ github.event.inputs.deployment_method == 'self-hosted' }}
-    runs-on: [self-hosted, linux, production]
+  deploy-production:
+    name: Deploy n8n with PostgreSQL
+    # Usa el runner que ya tienes instalado llamado 'n8n'
+    runs-on: self-hosted
     environment: ${{ inputs.environment || 'production' }}
 
     steps:
