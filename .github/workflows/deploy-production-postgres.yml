@@ -89,16 +89,65 @@ jobs:
 
       - name: Deploy with Docker Compose
         run: |
-          # Ejecutar script como usuario n8n
-          sudo -u n8n bash -c 'cd /opt/n8n && ./deploy-n8n-postgres.sh'
+          # Ejecutar deployment como usuario n8n con podman directo
+          sudo -u n8n bash -c '
+            cd /opt/n8n
 
-          # Verificar que los contenedores se crearon
-          sleep 10
-          if command -v podman &> /dev/null; then
-            sudo -u n8n podman ps -a
-          else
-            sudo -u n8n docker ps -a
-          fi
+            # Cargar variables de entorno
+            if [ -f .env ]; then
+              source .env
+            fi
+
+            echo "📋 Verificando podman-compose..."
+            if ! command -v podman-compose &> /dev/null; then
+              echo "⚠️ podman-compose no encontrado, usando podman directo"
+
+              # Crear red si no existe
+              podman network create n8n-network 2>/dev/null || true
+
+              # Iniciar PostgreSQL
+              echo "🗄️ Iniciando PostgreSQL..."
+              podman run -d \
+                --name n8n-postgres \
+                --network n8n-network \
+                -e POSTGRES_USER=n8n \
+                -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-n8n_password}" \
+                -e POSTGRES_DB=n8n \
+                -p 5432:5432 \
+                -v postgres_data:/var/lib/postgresql/data \
+                --restart always \
+                postgres:15-alpine
+
+              # Esperar a que PostgreSQL esté listo
+              sleep 15
+
+              # Iniciar n8n
+              echo "🚀 Iniciando n8n..."
+              podman run -d \
+                --name n8n \
+                --network n8n-network \
+                -e DB_TYPE=postgresdb \
+                -e DB_POSTGRESDB_HOST=n8n-postgres \
+                -e DB_POSTGRESDB_PORT=5432 \
+                -e DB_POSTGRESDB_DATABASE=n8n \
+                -e DB_POSTGRESDB_USER=n8n \
+                -e DB_POSTGRESDB_PASSWORD="${POSTGRES_PASSWORD:-n8n_password}" \
+                -e N8N_BASIC_AUTH_ACTIVE=true \
+                -e N8N_BASIC_AUTH_USER=admin \
+                -e N8N_BASIC_AUTH_PASSWORD="${N8N_BASIC_AUTH_PASSWORD:-changeme}" \
+                -p 5678:5678 \
+                -v n8n_data:/home/node/.n8n \
+                --restart always \
+                docker.io/n8nio/n8n:latest
+            else
+              echo "✅ Usando podman-compose"
+              podman-compose -f docker-compose-postgres.yml up -d
+            fi
+
+            # Mostrar contenedores creados
+            echo "📦 Contenedores creados:"
+            podman ps -a
+          '
 
       - name: Health check
         run: |
