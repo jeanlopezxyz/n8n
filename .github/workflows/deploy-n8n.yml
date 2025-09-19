@@ -367,27 +367,6 @@ jobs:
           echo "=== Recent n8n logs ==="
           sudo -u n8n podman logs --tail=30 n8n 2>/dev/null || echo "Could not retrieve logs"
 
-      - name: Create systemd services for auto-start
-        run: |
-          echo "🔧 Creating systemd services for auto-start..."
-
-          # Generate systemd service files for each container
-          sudo -u n8n podman generate systemd --new --name --files \
-            n8n-postgres n8n-redis n8n-worker-1 n8n-worker-2 n8n n8n-postgres-backup
-
-          # Move service files to systemd directory
-          sudo mv container-*.service /etc/systemd/system/
-
-          # Reload systemd and enable services
-          sudo systemctl daemon-reload
-          sudo systemctl enable container-n8n-postgres.service
-          sudo systemctl enable container-n8n-redis.service
-          sudo systemctl enable container-n8n-worker-1.service
-          sudo systemctl enable container-n8n-worker-2.service
-          sudo systemctl enable container-n8n.service
-          sudo systemctl enable container-n8n-postgres-backup.service
-
-          echo "✅ Systemd services created and enabled for auto-start on boot"
 
       - name: Deployment notification
         if: always()
@@ -398,7 +377,7 @@ jobs:
             echo "📊 Components running:"
             sudo -u n8n podman ps --format "table {{.Names}}\t{{.Status}}" | grep -E "n8n|redis|postgres" || true
             echo ""
-            echo "🔄 Services will auto-start on system reboot"
+            echo "🔄 All containers configured with --restart always"
           else
             echo "❌ n8n production stack deployment failed"
             echo "Check the logs above for details"
