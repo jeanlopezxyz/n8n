@@ -6,7 +6,7 @@ on:
       - main
       - master
     paths:
-      - 'podman-compose*.yml'
+      - 'docker-compose*.yml'
       - 'Dockerfile'
       - '.github/workflows/deploy-n8n.yml'
 
@@ -23,7 +23,7 @@ on:
 
 env:
   DEPLOYMENT_PATH: /opt/n8n
-  COMPOSE_FILE: podman-compose-production.yml
+  COMPOSE_FILE: docker-compose-production.yml
 
 jobs:
   deploy:
@@ -49,8 +49,8 @@ jobs:
 
       - name: Copy deployment files
         run: |
-          # Copy podman-compose file
-          sudo -u n8n cp -f podman-compose-production.yml ${{ env.DEPLOYMENT_PATH }}/
+          # Copy docker-compose file
+          sudo -u n8n cp -f docker-compose-production.yml ${{ env.DEPLOYMENT_PATH }}/
 
           # Create .env file if it doesn't exist
           if [ ! -f "${{ env.DEPLOYMENT_PATH }}/.env" ]; then
@@ -59,7 +59,7 @@ jobs:
           fi
 
           # Ensure proper permissions
-          sudo -u n8n chmod 644 ${{ env.DEPLOYMENT_PATH }}/podman-compose-production.yml
+          sudo -u n8n chmod 644 ${{ env.DEPLOYMENT_PATH }}/docker-compose-production.yml
 
       - name: Stop existing stack
         run: |
