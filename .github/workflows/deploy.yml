@@ -86,10 +86,9 @@ jobs:
             SUDO_PREFIX=""
           fi
 
-          # Stop existing containers
+          # Stop and remove existing containers in one command
           echo "Stopping existing containers..."
-          $SUDO_PREFIX $CONTAINER_RUNTIME stop n8n n8n-postgres n8n-redis 2>/dev/null || true
-          $SUDO_PREFIX $CONTAINER_RUNTIME rm -f n8n n8n-postgres n8n-redis 2>/dev/null || true
+          $SUDO_PREFIX $CONTAINER_RUNTIME stop n8n n8n-postgres n8n-redis 2>/dev/null || true; $SUDO_PREFIX $CONTAINER_RUNTIME rm -f n8n n8n-postgres n8n-redis 2>/dev/null || true
 
           # Create network
           echo "Creating network..."
@@ -139,13 +138,17 @@ jobs:
             --save 300 100 \
             --save 900 10
 
-          # Wait for services
-          echo "Waiting for services to start..."
-          sleep 20
-
-          # Pull n8n image
+          # Pull n8n image while services are starting
           echo "Pulling official n8n image..."
-          $SUDO_PREFIX $CONTAINER_RUNTIME pull $IMAGE
+          $SUDO_PREFIX $CONTAINER_RUNTIME pull $IMAGE &
+          PULL_PID=$!
+
+          # Wait for services to initialize
+          echo "Waiting for services to start..."
+          sleep 10
+
+          # Ensure image pull is complete
+          wait $PULL_PID
 
           # Deploy n8n with memory limits
           echo "Starting n8n (2.5GB RAM limit)..."
@@ -204,9 +207,12 @@ jobs:
             if $SUDO_PREFIX podman exec n8n-postgres pg_isready -U n8n 2>/dev/null; then
               echo "PostgreSQL is ready"
               break
+            elif [ $i -eq 10 ]; then
+              echo "PostgreSQL failed to start after 10 attempts"
+              exit 1
             else
               echo "Attempt $i/10 - PostgreSQL not ready..."
-              sleep 5
+              sleep 3
             fi
           done
 
@@ -216,9 +222,12 @@ jobs:
             if $SUDO_PREFIX podman exec n8n-redis redis-cli ping 2>/dev/null | grep -q PONG; then
               echo "Redis is ready"
               break
+            elif [ $i -eq 10 ]; then
+              echo "Redis failed to start after 10 attempts"
+              exit 1
             else
               echo "Attempt $i/10 - Redis not ready..."
-              sleep 5
+              sleep 3
             fi
           done
 
