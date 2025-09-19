@@ -29,6 +29,15 @@ env:
   DEPLOYMENT_PATH: /opt/n8n
   APP_USER: n8n
   APP_PORT: 5678
+  # Resource limits for medium load (100-500 workflows/hour)
+  # Adjust these based on your needs
+  POSTGRES_MEMORY: 1536m  # 1.5GB for PostgreSQL
+  POSTGRES_CPU: "1.0"     # 1 CPU core
+  REDIS_MEMORY: 512m      # 512MB for Redis
+  REDIS_CPU: "0.5"        # 0.5 CPU core
+  N8N_MEMORY: 2560m       # 2.5GB for n8n
+  N8N_CPU: "2.0"          # 2 CPU cores
+  # Total: 4.5GB RAM, 3.5 CPU cores
 
 jobs:
   # ============================================
@@ -94,27 +103,45 @@ jobs:
           $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-data 2>/dev/null || true
           $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-redis-data 2>/dev/null || true
 
-          # Deploy PostgreSQL
-          echo "🗄️ Starting PostgreSQL..."
+          # Deploy PostgreSQL with resource limits for medium load
+          echo "🗄️ Starting PostgreSQL (1.5GB RAM, 1 CPU)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n-postgres \
             --network n8n-network \
             --restart unless-stopped \
+            --memory="${{ env.POSTGRES_MEMORY }}" \
+            --memory-swap="${{ env.POSTGRES_MEMORY }}" \
+            --cpus="${{ env.POSTGRES_CPU }}" \
             -e POSTGRES_USER=n8n \
             -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD || 'n8n' }}" \
             -e POSTGRES_DB=n8n \
             -v n8n-postgres-data:/var/lib/postgresql/data \
-            docker.io/postgres:15-alpine
+            docker.io/postgres:15-alpine \
+            postgres \
+            -c shared_buffers=384MB \
+            -c effective_cache_size=1152MB \
+            -c maintenance_work_mem=96MB \
+            -c work_mem=4MB \
+            -c max_connections=100
 
-          # Deploy Redis
-          echo "🔴 Starting Redis..."
+          # Deploy Redis with resource limits for medium load
+          echo "🔴 Starting Redis (512MB RAM, 0.5 CPU)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n-redis \
             --network n8n-network \
             --restart unless-stopped \
+            --memory="${{ env.REDIS_MEMORY }}" \
+            --memory-swap="${{ env.REDIS_MEMORY }}" \
+            --cpus="${{ env.REDIS_CPU }}" \
             -v n8n-redis-data:/data \
             docker.io/redis:7-alpine \
-            redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+            redis-server \
+            --appendonly yes \
+            --maxmemory 384mb \
+            --maxmemory-policy allkeys-lru \
+            --save 60 1000 \
+            --save 300 100 \
+            --save 900 10
 
           # Wait for services
           echo "⏳ Waiting for services to start..."
@@ -124,12 +151,15 @@ jobs:
           echo "📥 Pulling official n8n image..."
           $SUDO_PREFIX $CONTAINER_RUNTIME pull $IMAGE
 
-          # Deploy n8n with Redis queue mode
-          echo "🚀 Starting n8n..."
+          # Deploy n8n with resource limits for medium load
+          echo "🚀 Starting n8n (2.5GB RAM, 2 CPUs)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n \
             --network n8n-network \
             --restart unless-stopped \
+            --memory="${{ env.N8N_MEMORY }}" \
+            --memory-swap="${{ env.N8N_MEMORY }}" \
+            --cpus="${{ env.N8N_CPU }}" \
             -p ${{ env.APP_PORT }}:5678 \
             -e DB_TYPE=postgresdb \
             -e DB_POSTGRESDB_HOST=n8n-postgres \
