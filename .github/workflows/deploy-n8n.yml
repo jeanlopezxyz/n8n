@@ -113,7 +113,7 @@ jobs:
 
       - name: Login to GitHub Container Registry
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | sudo -u n8n podman login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo -u n8n docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
       - name: Create deployment directories
         run: |
@@ -199,34 +199,45 @@ jobs:
 
           sudo -u n8n chmod 600 ${{ env.DEPLOYMENT_PATH }}/.env
 
-      - name: Install podman-compose if not exists
+      - name: Verify Docker and Docker Compose
         run: |
-          if ! command -v podman-compose &> /dev/null; then
-            echo "Installing podman-compose..."
-            sudo pip3 install podman-compose
-          else
-            echo "podman-compose already installed"
+          # Check Docker
+          if ! command -v docker &> /dev/null; then
+            echo "Error: Docker is not installed"
+            exit 1
           fi
+
+          # Check Docker Compose
+          if ! docker compose version &> /dev/null; then
+            if ! command -v docker-compose &> /dev/null; then
+              echo "Installing docker-compose..."
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            fi
+          fi
+
+          # Add n8n user to docker group if needed
+          sudo usermod -aG docker n8n || true
 
       - name: Stop existing stack
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
           echo "📦 Stopping existing containers..."
-          sudo -u n8n podman-compose -f docker-compose-production.yml down || true
+          sudo -u n8n docker-compose -f docker-compose-production.yml down || true
 
       - name: Pull latest images
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
           echo "📥 Pulling latest images..."
-          sudo -u n8n podman pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          sudo -u n8n podman pull docker.io/library/postgres:15-alpine
-          sudo -u n8n podman pull docker.io/library/redis:7-alpine
+          sudo -u n8n docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          sudo -u n8n docker pull docker.io/library/postgres:15-alpine
+          sudo -u n8n docker pull docker.io/library/redis:7-alpine
 
       - name: Start production stack
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
           echo "🚀 Starting production stack..."
-          sudo -u n8n podman-compose -f docker-compose-production.yml up -d
+          sudo -u n8n docker-compose -f docker-compose-production.yml up -d
 
           # Wait for services to initialize
           echo "⏳ Waiting for services to start..."
@@ -240,12 +251,12 @@ jobs:
 
           # Check container status
           echo "=== Container Status ==="
-          sudo -u n8n podman-compose -f docker-compose-production.yml ps
+          sudo -u n8n docker-compose -f docker-compose-production.yml ps
 
           # Check PostgreSQL
           echo "Checking PostgreSQL..."
           for i in {1..10}; do
-            if sudo -u n8n podman exec n8n-postgres pg_isready -U n8n 2>/dev/null; then
+            if sudo -u n8n docker exec n8n-postgres pg_isready -U n8n 2>/dev/null; then
               echo "✅ PostgreSQL is ready"
               break
             fi
@@ -256,7 +267,7 @@ jobs:
           # Check Redis
           echo "Checking Redis..."
           for i in {1..10}; do
-            if sudo -u n8n podman exec n8n-redis redis-cli ping 2>/dev/null; then
+            if sudo -u n8n docker exec n8n-redis redis-cli ping 2>/dev/null; then
               echo "✅ Redis is ready"
               break
             fi
@@ -282,7 +293,7 @@ jobs:
 
           if [ $attempt -gt $max_attempts ]; then
             echo "❌ n8n health check failed after $max_attempts attempts"
-            sudo -u n8n podman-compose -f docker-compose-production.yml logs n8n
+            sudo -u n8n docker-compose -f docker-compose-production.yml logs n8n
             exit 1
           fi
 
@@ -293,19 +304,19 @@ jobs:
           echo "🔧 Checking worker status..."
 
           # Check if workers are running
-          if sudo -u n8n podman ps | grep -q n8n-worker; then
+          if sudo -u n8n docker ps | grep -q n8n-worker; then
             echo "✅ Workers are running"
 
             # Show worker logs
             echo "Worker 1 last logs:"
-            sudo -u n8n podman-compose -f docker-compose-production.yml logs --tail=10 n8n-worker-1 2>/dev/null || true
+            sudo -u n8n docker-compose -f docker-compose-production.yml logs --tail=10 n8n-worker-1 2>/dev/null || true
 
             echo ""
             echo "Worker 2 last logs:"
-            sudo -u n8n podman-compose -f docker-compose-production.yml logs --tail=10 n8n-worker-2 2>/dev/null || true
+            sudo -u n8n docker-compose -f docker-compose-production.yml logs --tail=10 n8n-worker-2 2>/dev/null || true
           else
             echo "⚠️ No workers found - checking if queue mode is enabled..."
-            sudo -u n8n podman-compose -f docker-compose-production.yml logs --tail=20 n8n
+            sudo -u n8n docker-compose -f docker-compose-production.yml logs --tail=20 n8n
           fi
 
       - name: Show deployment summary
@@ -327,11 +338,11 @@ jobs:
 
           echo ""
           echo "=== Container Status ==="
-          sudo -u n8n podman-compose -f docker-compose-production.yml ps
+          sudo -u n8n docker-compose -f docker-compose-production.yml ps
 
           echo ""
           echo "=== Recent n8n logs ==="
-          sudo -u n8n podman-compose -f docker-compose-production.yml logs --tail=30 n8n 2>/dev/null || echo "Could not retrieve logs"
+          sudo -u n8n docker-compose -f docker-compose-production.yml logs --tail=30 n8n 2>/dev/null || echo "Could not retrieve logs"
 
       - name: Deployment notification
         if: always()
@@ -340,7 +351,7 @@ jobs:
             echo "✅ n8n production stack deployed successfully!"
             echo "🌐 Access URL: https://n8n.labjp.xyz"
             echo "📊 Components running:"
-            sudo -u n8n podman ps --format "table {{.Names}}\t{{.Status}}" | grep -E "n8n|redis|postgres" || true
+            sudo -u n8n docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "n8n|redis|postgres" || true
           else
             echo "❌ n8n production stack deployment failed"
             echo "Check the logs above for details"

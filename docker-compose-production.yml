@@ -9,8 +9,7 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data:Z
-    networks:
+      - redis_data:/data    networks:
       - n8n-network
     mem_limit: ${REDIS_MEMORY_LIMIT:-512m}
     mem_reservation: ${REDIS_MEMORY_RESERVATION:-256m}
@@ -33,9 +32,7 @@ services:
       - POSTGRES_DB=n8n
       - PGDATA=/var/lib/postgresql/data/pgdata
     volumes:
-      - postgres_data:/var/lib/postgresql/data:Z
-      - postgres_backups:/backups:Z
-    ports:
+      - postgres_data:/var/lib/postgresql/data      - postgres_backups:/backups    ports:
       - "5432:5432"
     networks:
       - n8n-network
@@ -82,9 +79,7 @@ services:
       - TZ=${TZ:-America/Mexico_City}
 
     volumes:
-      - n8n_worker1:/home/node/.n8n:Z
-      - n8n_files:/files:Z
-    depends_on:
+      - n8n_worker1:/home/node/.n8n      - n8n_files:/files    depends_on:
       postgres:
         condition: service_healthy
       redis:
@@ -128,9 +123,7 @@ services:
       - TZ=${TZ:-America/Mexico_City}
 
     volumes:
-      - n8n_worker2:/home/node/.n8n:Z
-      - n8n_files:/files:Z
-    depends_on:
+      - n8n_worker2:/home/node/.n8n      - n8n_files:/files    depends_on:
       postgres:
         condition: service_healthy
       redis:
@@ -201,10 +194,7 @@ services:
       - N8N_METRICS_PREFIX=n8n_
 
     volumes:
-      - n8n_files:/files:Z
-      - n8n_custom:/home/node/.n8n/custom:Z
-      - n8n_main:/home/node/.n8n:Z
-
+      - n8n_files:/files      - n8n_custom:/home/node/.n8n/custom      - n8n_main:/home/node/.n8n
     depends_on:
       postgres:
         condition: service_healthy
@@ -235,8 +225,7 @@ services:
     environment:
       - PGPASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
     volumes:
-      - postgres_backups:/backups:Z
-      - ./scripts:/scripts:ro,Z
+      - postgres_backups:/backups      - ./scripts:/scripts:ro,Z
     command: >
       sh -c 'while true; do
         timestamp=$$(date +\%Y\%m\%d_\%H\%M\%S);
