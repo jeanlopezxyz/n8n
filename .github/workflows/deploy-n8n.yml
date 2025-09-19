@@ -128,8 +128,8 @@ jobs:
             -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
             -e POSTGRES_DB=n8n \
             -e PGDATA=/var/lib/postgresql/data/pgdata \
-            -v ${{ env.DEPLOYMENT_PATH }}/postgres_data:/var/lib/postgresql/data:z \
-            -v ${{ env.DEPLOYMENT_PATH }}/postgres_backups:/backups:z \
+            -v ${{ env.DEPLOYMENT_PATH }}/postgres_data:/var/lib/postgresql/data \
+            -v ${{ env.DEPLOYMENT_PATH }}/postgres_backups:/backups \
             -p 5432:5432 \
             --restart always \
             docker.io/library/postgres:15-alpine
@@ -154,7 +154,7 @@ jobs:
             --network n8n-network \
             --memory=512m \
             --memory-reservation=256m \
-            -v ${{ env.DEPLOYMENT_PATH }}/redis_data:/data:z \
+            -v ${{ env.DEPLOYMENT_PATH }}/redis_data:/data \
             -p 6379:6379 \
             --restart always \
             docker.io/library/redis:7-alpine \
@@ -195,8 +195,8 @@ jobs:
             -e N8N_ENCRYPTION_KEY="${N8N_ENCRYPTION_KEY:-your-encryption-key-here}" \
             -e GENERIC_TIMEZONE="America/Mexico_City" \
             -e TZ="America/Mexico_City" \
-            -v ${{ env.DEPLOYMENT_PATH }}/n8n_worker1:/home/node/.n8n:z \
-            -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files:z \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_worker1:/home/node/.n8n \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files \
             --restart always \
             docker.io/n8nio/n8n:latest \
             n8n worker
@@ -227,8 +227,8 @@ jobs:
             -e N8N_ENCRYPTION_KEY="${N8N_ENCRYPTION_KEY:-your-encryption-key-here}" \
             -e GENERIC_TIMEZONE="America/Mexico_City" \
             -e TZ="America/Mexico_City" \
-            -v ${{ env.DEPLOYMENT_PATH }}/n8n_worker2:/home/node/.n8n:z \
-            -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files:z \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_worker2:/home/node/.n8n \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files \
             --restart always \
             docker.io/n8nio/n8n:latest \
             n8n worker
@@ -274,9 +274,9 @@ jobs:
             -e N8N_METRICS=true \
             -e N8N_METRICS_INCLUDE_DEFAULT=true \
             -e N8N_PAYLOAD_SIZE_MAX="${N8N_PAYLOAD_SIZE_MAX:-16}" \
-            -v ${{ env.DEPLOYMENT_PATH }}/n8n_main:/home/node/.n8n:z \
-            -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files:z \
-            -v ${{ env.DEPLOYMENT_PATH }}/n8n_custom:/home/node/.n8n/custom:z \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_main:/home/node/.n8n \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_custom:/home/node/.n8n/custom \
             -p 5678:5678 \
             --restart always \
             docker.io/n8nio/n8n:latest
@@ -291,7 +291,7 @@ jobs:
             --memory=256m \
             --memory-reservation=128m \
             -e PGPASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
-            -v ${{ env.DEPLOYMENT_PATH }}/postgres_backups:/backups:z \
+            -v ${{ env.DEPLOYMENT_PATH }}/postgres_backups:/backups \
             --restart always \
             docker.io/library/postgres:15-alpine \
             sh -c 'while true; do
