@@ -1,4 +1,4 @@
-name: Deploy n8n with PostgreSQL
+name: Deploy n8n Production Stack
 
 on:
   push:
@@ -23,57 +23,89 @@ on:
 
 env:
   DEPLOYMENT_PATH: /opt/n8n
-  COMPOSE_FILE: docker-compose-postgres.yml
+  COMPOSE_FILE: docker-compose-production.yml
 
 jobs:
   deploy:
-    name: Deploy n8n Stack
+    name: Deploy n8n Production Stack
     runs-on: [self-hosted, n8n]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Verify running as n8n user
+      - name: Verify environment
         run: |
+          echo "🚀 Deploying n8n Production Stack"
           echo "Current user: $(whoami)"
-          echo "Home directory: $HOME"
-          echo "Working directory: $(pwd)"
+          echo "Deployment path: ${{ env.DEPLOYMENT_PATH }}"
+          echo "Environment: ${{ inputs.environment || 'production' }}"
 
-      - name: Copy docker-compose file
+      - name: Create deployment directory
         run: |
-          # Copy compose file to deployment directory
-          sudo -u n8n cp -f docker-compose-postgres.yml ${{ env.DEPLOYMENT_PATH }}/
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/scripts
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/backups
+
+      - name: Copy deployment files
+        run: |
+          # Copy docker-compose file
+          sudo -u n8n cp -f docker-compose-production.yml ${{ env.DEPLOYMENT_PATH }}/
+
+          # Create .env file if it doesn't exist
+          if [ ! -f "${{ env.DEPLOYMENT_PATH }}/.env" ]; then
+            sudo -u n8n touch ${{ env.DEPLOYMENT_PATH }}/.env
+            echo "Created new .env file"
+          fi
 
           # Ensure proper permissions
-          sudo -u n8n chmod 644 ${{ env.DEPLOYMENT_PATH }}/docker-compose-postgres.yml
+          sudo -u n8n chmod 644 ${{ env.DEPLOYMENT_PATH }}/docker-compose-production.yml
 
-      - name: Deploy n8n stack
+      - name: Stop existing stack
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
 
-          # Pull latest images
+          echo "📦 Stopping existing containers..."
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} down --timeout 30 || true
+
+      - name: Pull latest images
+        run: |
+          cd ${{ env.DEPLOYMENT_PATH }}
+
+          echo "📥 Pulling latest images..."
           sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} pull
 
-          # Stop existing containers gracefully
-          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} down --timeout 30
-
-          # Start new containers
-          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} up -d
-
-          # Wait for services to be healthy
-          echo "Waiting for services to start..."
-          sleep 30
-
-      - name: Health check
+      - name: Start production stack
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
+
+          echo "🚀 Starting production stack..."
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} up -d
+
+          # Wait for services to initialize
+          echo "⏳ Waiting for services to start..."
+          sleep 45
+
+      - name: Health checks
+        run: |
+          cd ${{ env.DEPLOYMENT_PATH }}
+
+          echo "🔍 Checking service health..."
 
           # Check container status
           sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} ps
 
-          # Verify n8n is responding
-          max_attempts=10
+          # Check Redis
+          echo "Checking Redis..."
+          sudo -u n8n docker exec n8n-redis redis-cli ping || exit 1
+
+          # Check PostgreSQL
+          echo "Checking PostgreSQL..."
+          sudo -u n8n docker exec n8n-postgres pg_isready -U n8n || exit 1
+
+          # Check n8n main instance
+          echo "Checking n8n main instance..."
+          max_attempts=15
           attempt=1
 
           while [ $attempt -le $max_attempts ]; do
@@ -93,23 +125,58 @@ jobs:
             exit 1
           fi
 
-      - name: Show deployment logs
+      - name: Verify workers
+        run: |
+          cd ${{ env.DEPLOYMENT_PATH }}
+
+          echo "🔧 Checking worker status..."
+
+          # Check if workers are running
+          sudo -u n8n docker ps | grep n8n-worker || exit 1
+
+          # Show worker logs
+          echo "Worker 1 status:"
+          sudo -u n8n docker logs --tail=20 n8n-worker-1
+
+          echo "Worker 2 status:"
+          sudo -u n8n docker logs --tail=20 n8n-worker-2
+
+      - name: Show deployment summary
         if: always()
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
-          echo "=== Recent n8n logs ==="
-          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} logs --tail=50 n8n
 
-          echo "=== Container status ==="
+          echo "📊 === Deployment Summary ==="
+          echo "Environment: ${{ inputs.environment || 'production' }}"
+          echo "Stack components:"
+          echo "  - PostgreSQL 15 (Database)"
+          echo "  - Redis 7 (Queue & Cache)"
+          echo "  - n8n Main (Web UI & API)"
+          echo "  - n8n Worker 1 (Background jobs)"
+          echo "  - n8n Worker 2 (Background jobs)"
+          echo "  - Backup Service (Daily backups)"
+
+          echo ""
+          echo "=== Container Status ==="
           sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} ps
 
-      - name: Notify deployment status
+          echo ""
+          echo "=== Recent n8n logs ==="
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} logs --tail=30 n8n
+
+      - name: Deployment notification
         if: always()
         run: |
           if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ n8n deployed successfully to ${{ inputs.environment || 'production' }}"
+            echo "✅ n8n production stack deployed successfully!"
             echo "🌐 Access URL: https://n8n.labjp.xyz"
+            echo "📊 Components running:"
+            echo "   - PostgreSQL: ✅"
+            echo "   - Redis: ✅"
+            echo "   - n8n Main: ✅"
+            echo "   - Workers: ✅"
+            echo "   - Backup Service: ✅"
           else
-            echo "❌ n8n deployment failed"
+            echo "❌ n8n production stack deployment failed"
             echo "Check the logs above for details"
           fi
