@@ -1,0 +1,28 @@
+name: Deploy n8n Application
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'Dockerfile'
+      - 'database/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  deploy-stack:
+    name: Deploy n8n Complete Stack
+    uses: labjp-xyz/github-workflows/.github/workflows/deploy-n8n.yml@main
+    with:
+      environment: ${{ inputs.environment || 'production' }}
+      n8n-version: 'latest'
+    secrets: inherit
