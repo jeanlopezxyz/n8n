@@ -42,7 +42,7 @@ jobs:
   # PREPARE
   # ============================================
   prepare:
-    name: 🎯 Prepare Deployment
+    name: Prepare Deployment
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.image.outputs.image }}
@@ -56,7 +56,7 @@ jobs:
           VERSION="latest"
           IMAGE="docker.io/n8nio/n8n:${VERSION}"
 
-          echo "📦 Using official n8n image: ${IMAGE}"
+          echo "Using official n8n image: ${IMAGE}"
           echo "image=${IMAGE}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
@@ -64,7 +64,7 @@ jobs:
   # DEPLOY TO PRODUCTION
   # ============================================
   deploy:
-    name: 🚀 Deploy n8n Stack
+    name: Deploy n8n Stack
     needs: [prepare]
     runs-on: [self-hosted]
     environment: ${{ inputs.environment || 'production' }}
@@ -72,7 +72,7 @@ jobs:
     steps:
       - name: Deploy Stack
         run: |
-          echo "🚀 Starting n8n deployment with Redis..."
+          echo "Starting n8n deployment with Redis..."
 
           # Configuration
           IMAGE="${{ needs.prepare.outputs.image }}"
@@ -80,29 +80,29 @@ jobs:
 
           # Check if running as correct user
           if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
-            echo "⚠️ Switching to user ${{ env.APP_USER }}..."
+            echo "Switching to user ${{ env.APP_USER }}..."
             SUDO_PREFIX="sudo -u ${{ env.APP_USER }}"
           else
             SUDO_PREFIX=""
           fi
 
           # Stop existing containers
-          echo "🛑 Stopping existing containers..."
+          echo "Stopping existing containers..."
           $SUDO_PREFIX $CONTAINER_RUNTIME stop n8n n8n-postgres n8n-redis 2>/dev/null || true
           $SUDO_PREFIX $CONTAINER_RUNTIME rm -f n8n n8n-postgres n8n-redis 2>/dev/null || true
 
           # Create network
-          echo "🌐 Creating network..."
+          echo "Creating network..."
           $SUDO_PREFIX $CONTAINER_RUNTIME network create n8n-network 2>/dev/null || true
 
           # Create volumes
-          echo "📁 Creating volumes..."
+          echo "Creating volumes..."
           $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-postgres-data 2>/dev/null || true
           $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-data 2>/dev/null || true
           $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-redis-data 2>/dev/null || true
 
           # Deploy PostgreSQL with memory limits (CPU limits don't work in rootless)
-          echo "🗄️ Starting PostgreSQL (1.5GB RAM limit)..."
+          echo "Starting PostgreSQL (1.5GB RAM limit)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n-postgres \
             --network n8n-network \
@@ -122,7 +122,7 @@ jobs:
             -c max_connections=100
 
           # Deploy Redis with memory limits
-          echo "🔴 Starting Redis (512MB RAM limit)..."
+          echo "Starting Redis (512MB RAM limit)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n-redis \
             --network n8n-network \
@@ -140,15 +140,15 @@ jobs:
             --save 900 10
 
           # Wait for services
-          echo "⏳ Waiting for services to start..."
+          echo "Waiting for services to start..."
           sleep 20
 
           # Pull n8n image
-          echo "📥 Pulling official n8n image..."
+          echo "Pulling official n8n image..."
           $SUDO_PREFIX $CONTAINER_RUNTIME pull $IMAGE
 
           # Deploy n8n with memory limits
-          echo "🚀 Starting n8n (2.5GB RAM limit)..."
+          echo "Starting n8n (2.5GB RAM limit)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n \
             --network n8n-network \
@@ -176,20 +176,20 @@ jobs:
             -v n8n-data:/home/node/.n8n \
             $IMAGE
 
-          echo "✅ Deployment completed!"
+          echo "Deployment completed!"
 
   # ============================================
   # HEALTH CHECK
   # ============================================
   health-check:
-    name: ✅ Health Verification
+    name: Health Verification
     needs: deploy
     runs-on: [self-hosted]
 
     steps:
       - name: Check Services Health
         run: |
-          echo "🔍 Checking services..."
+          echo "Checking services..."
 
           # Check if running as correct user
           if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
@@ -199,46 +199,46 @@ jobs:
           fi
 
           # Check PostgreSQL
-          echo "🗄️ Checking PostgreSQL..."
+          echo "Checking PostgreSQL..."
           for i in {1..10}; do
             if $SUDO_PREFIX podman exec n8n-postgres pg_isready -U n8n 2>/dev/null; then
-              echo "✅ PostgreSQL is ready"
+              echo "PostgreSQL is ready"
               break
             else
-              echo "⏳ Attempt $i/10 - PostgreSQL not ready..."
+              echo "Attempt $i/10 - PostgreSQL not ready..."
               sleep 5
             fi
           done
 
           # Check Redis
-          echo "🔴 Checking Redis..."
+          echo "Checking Redis..."
           for i in {1..10}; do
             if $SUDO_PREFIX podman exec n8n-redis redis-cli ping 2>/dev/null | grep -q PONG; then
-              echo "✅ Redis is ready"
+              echo "Redis is ready"
               break
             else
-              echo "⏳ Attempt $i/10 - Redis not ready..."
+              echo "Attempt $i/10 - Redis not ready..."
               sleep 5
             fi
           done
 
           # Check n8n
-          echo "🔍 Checking n8n..."
+          echo "Checking n8n..."
           URL="http://localhost:${{ env.APP_PORT }}"
 
           for i in {1..15}; do
             if curl -f -s -o /dev/null -w "%{http_code}" "$URL/healthz" | grep -q "200\|204"; then
-              echo "✅ n8n is healthy"
-              echo "🎉 All services running!"
-              echo "📦 Access n8n at: $URL"
+              echo "n8n is healthy"
+              echo "All services running!"
+              echo "Access n8n at: $URL"
               exit 0
             else
-              echo "⏳ Attempt $i/15 - Waiting for n8n..."
+              echo "Attempt $i/15 - Waiting for n8n..."
               sleep 10
             fi
           done
 
-          echo "❌ Health check failed"
+          echo "Health check failed"
           exit 1
 
       - name: Show Stack Status
@@ -250,15 +250,15 @@ jobs:
             SUDO_PREFIX=""
           fi
 
-          echo "📦 Running containers:"
+          echo "Running containers:"
           $SUDO_PREFIX podman ps
 
           echo ""
-          echo "💾 Memory usage (if supported):"
+          echo "Memory usage (if supported):"
           $SUDO_PREFIX podman stats --no-stream 2>/dev/null || echo "Stats not available in rootless mode"
 
           echo ""
-          echo "💾 Volume usage:"
+          echo "Volume usage:"
           for vol in n8n-data n8n-postgres-data n8n-redis-data; do
             if $SUDO_PREFIX podman volume exists $vol 2>/dev/null; then
               echo "Volume: $vol"
@@ -268,14 +268,14 @@ jobs:
           done
 
           echo ""
-          echo "📊 System disk usage:"
+          echo "System disk usage:"
           df -h / | grep -E '(Filesystem|^/)'
 
   # ============================================
   # SUMMARY
   # ============================================
   summary:
-    name: 📊 Deployment Summary
+    name: Deployment Summary
     needs: [prepare, deploy, health-check]
     if: always()
     runs-on: ubuntu-latest
@@ -283,45 +283,45 @@ jobs:
     steps:
       - name: Generate summary
         run: |
-          echo "# 📊 n8n Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "# n8n Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "## 🏗️ Stack Components" >> $GITHUB_STEP_SUMMARY
+          echo "## Stack Components" >> $GITHUB_STEP_SUMMARY
           echo "- PostgreSQL 15 (Database) - 1.5GB RAM limit" >> $GITHUB_STEP_SUMMARY
           echo "- Redis 7 (Queue & Cache) - 512MB RAM limit" >> $GITHUB_STEP_SUMMARY
           echo "- n8n (Workflow Automation) - 2.5GB RAM limit" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "## 📦 Image" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Using official n8n image" >> $GITHUB_STEP_SUMMARY
+          echo "## Image" >> $GITHUB_STEP_SUMMARY
+          echo "Using official n8n image" >> $GITHUB_STEP_SUMMARY
           echo "- Image: ${{ needs.prepare.outputs.image }}" >> $GITHUB_STEP_SUMMARY
           echo "- Version: ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🚀 Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Status" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ needs.deploy.result }}" == "success" ]]; then
-            echo "✅ Successfully deployed" >> $GITHUB_STEP_SUMMARY
+            echo "**Status:** Successfully deployed" >> $GITHUB_STEP_SUMMARY
             echo "- Environment: ${{ inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
             echo "- Port: ${{ env.APP_PORT }}" >> $GITHUB_STEP_SUMMARY
             echo "- Execution Mode: Queue (with Redis)" >> $GITHUB_STEP_SUMMARY
             echo "- Memory Protection: Enabled" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ Deployment failed" >> $GITHUB_STEP_SUMMARY
+            echo "**Status:** Deployment failed" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## ✅ Health Check" >> $GITHUB_STEP_SUMMARY
+          echo "## Health Check Results" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ needs.health-check.result }}" == "success" ]]; then
-            echo "✅ All services healthy" >> $GITHUB_STEP_SUMMARY
+            echo "All services are healthy:" >> $GITHUB_STEP_SUMMARY
             echo "- PostgreSQL: Running" >> $GITHUB_STEP_SUMMARY
             echo "- Redis: Running" >> $GITHUB_STEP_SUMMARY
             echo "- n8n: Running" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ Health check failed" >> $GITHUB_STEP_SUMMARY
+            echo "Health check failed" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🎯 Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "## Resource Configuration" >> $GITHUB_STEP_SUMMARY
           echo "- Total RAM allocated: 4.5GB" >> $GITHUB_STEP_SUMMARY
           echo "- CPU limits: Not available (Podman rootless)" >> $GITHUB_STEP_SUMMARY
           echo "- Supports: 100-500 workflows/hour" >> $GITHUB_STEP_SUMMARY
