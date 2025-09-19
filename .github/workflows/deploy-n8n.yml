@@ -113,7 +113,6 @@ jobs:
             --network n8n-network \
             --memory=1g \
             --memory-reservation=512m \
-            --cpus=1.0 \
             --shm-size=256m \
             -e POSTGRES_USER=n8n \
             -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
@@ -145,7 +144,6 @@ jobs:
             --network n8n-network \
             --memory=512m \
             --memory-reservation=256m \
-            --cpus=0.5 \
             -v ${{ env.DEPLOYMENT_PATH }}/redis_data:/data:Z \
             -p 6379:6379 \
             --restart always \
@@ -172,7 +170,6 @@ jobs:
             --network n8n-network \
             --memory=2g \
             --memory-reservation=1g \
-            --cpus=1.0 \
             -e DB_TYPE=postgresdb \
             -e DB_POSTGRESDB_HOST=n8n-postgres \
             -e DB_POSTGRESDB_PORT=5432 \
@@ -205,7 +202,6 @@ jobs:
             --network n8n-network \
             --memory=2g \
             --memory-reservation=1g \
-            --cpus=1.0 \
             -e DB_TYPE=postgresdb \
             -e DB_POSTGRESDB_HOST=n8n-postgres \
             -e DB_POSTGRESDB_PORT=5432 \
@@ -238,7 +234,6 @@ jobs:
             --network n8n-network \
             --memory=4g \
             --memory-reservation=2g \
-            --cpus=2.0 \
             -e DB_TYPE=postgresdb \
             -e DB_POSTGRESDB_HOST=n8n-postgres \
             -e DB_POSTGRESDB_PORT=5432 \
@@ -285,7 +280,6 @@ jobs:
             --network n8n-network \
             --memory=256m \
             --memory-reservation=128m \
-            --cpus=0.25 \
             -e PGPASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
             -v ${{ env.DEPLOYMENT_PATH }}/postgres_backups:/backups:Z \
             --restart always \
@@ -357,12 +351,12 @@ jobs:
           echo "Image: docker.io/n8nio/n8n:latest"
           echo ""
           echo "Stack components:"
-          echo "  - PostgreSQL 15 (Database) - 1GB RAM, 1 CPU"
-          echo "  - Redis 7 (Queue & Cache) - 512MB RAM, 0.5 CPU"
-          echo "  - n8n Main (Web UI & API) - 4GB RAM, 2 CPUs"
-          echo "  - n8n Worker 1 (Background jobs) - 2GB RAM, 1 CPU"
-          echo "  - n8n Worker 2 (Background jobs) - 2GB RAM, 1 CPU"
-          echo "  - Backup Service (Daily backups) - 256MB RAM, 0.25 CPU"
+          echo "  - PostgreSQL 15 (Database) - 1GB RAM"
+          echo "  - Redis 7 (Queue & Cache) - 512MB RAM"
+          echo "  - n8n Main (Web UI & API) - 4GB RAM"
+          echo "  - n8n Worker 1 (Background jobs) - 2GB RAM"
+          echo "  - n8n Worker 2 (Background jobs) - 2GB RAM"
+          echo "  - Backup Service (Daily backups) - 256MB RAM"
 
           echo ""
           echo "=== Container Status ==="
