@@ -1,4 +1,4 @@
-name: Deploy n8n Production Stack
+name: Build and Deploy n8n Production Stack
 
 on:
   push:
@@ -22,12 +22,56 @@ on:
           - staging
 
 env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
   DEPLOYMENT_PATH: /opt/n8n
-  COMPOSE_FILE: docker-compose-production.yml
 
 jobs:
+  build-and-push:
+    name: Build and Push to GitHub Registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
   deploy:
     name: Deploy n8n Production Stack
+    needs: build-and-push
     runs-on: [self-hosted, Linux, X64]
 
     steps:
@@ -40,72 +84,201 @@ jobs:
           echo "Current user: $(whoami)"
           echo "Deployment path: ${{ env.DEPLOYMENT_PATH }}"
           echo "Environment: ${{ inputs.environment || 'production' }}"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
 
-      - name: Create deployment directory
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo -u n8n podman login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+
+      - name: Create deployment directory and network
         run: |
           sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}
-          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/scripts
-          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/backups
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/postgres_data
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/postgres_backups
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/redis_data
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/n8n_data
 
-      - name: Copy deployment files
+          # Create podman network if it doesn't exist
+          sudo -u n8n podman network exists n8n-network || sudo -u n8n podman network create n8n-network
+
+      - name: Stop existing containers
         run: |
-          # Copy docker-compose file
-          sudo -u n8n cp -f docker-compose-production.yml ${{ env.DEPLOYMENT_PATH }}/
-
-          # Create .env file if it doesn't exist
-          if [ ! -f "${{ env.DEPLOYMENT_PATH }}/.env" ]; then
-            sudo -u n8n touch ${{ env.DEPLOYMENT_PATH }}/.env
-            echo "Created new .env file"
-          fi
-
-          # Ensure proper permissions
-          sudo -u n8n chmod 644 ${{ env.DEPLOYMENT_PATH }}/docker-compose-production.yml
-
-      - name: Stop existing stack
-        run: |
-          cd ${{ env.DEPLOYMENT_PATH }}
-
           echo "📦 Stopping existing containers..."
-          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} down --timeout 30 || true
+          sudo -u n8n podman stop n8n n8n-worker-1 n8n-worker-2 n8n-redis n8n-postgres n8n-postgres-backup || true
+          sudo -u n8n podman rm n8n n8n-worker-1 n8n-worker-2 n8n-redis n8n-postgres n8n-postgres-backup || true
 
       - name: Pull latest images
         run: |
-          cd ${{ env.DEPLOYMENT_PATH }}
-
           echo "📥 Pulling latest images..."
-          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} pull
+          sudo -u n8n podman pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          sudo -u n8n podman pull docker.io/library/postgres:15-alpine
+          sudo -u n8n podman pull docker.io/library/redis:7-alpine
 
-      - name: Start production stack
+      - name: Start PostgreSQL
         run: |
-          cd ${{ env.DEPLOYMENT_PATH }}
+          echo "🗄️ Starting PostgreSQL..."
+          sudo -u n8n podman run -d \
+            --name n8n-postgres \
+            --network n8n-network \
+            -e POSTGRES_USER=n8n \
+            -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
+            -e POSTGRES_DB=n8n \
+            -v ${{ env.DEPLOYMENT_PATH }}/postgres_data:/var/lib/postgresql/data:Z \
+            -v ${{ env.DEPLOYMENT_PATH }}/postgres_backups:/backups:Z \
+            -p 5432:5432 \
+            --restart always \
+            docker.io/library/postgres:15-alpine
 
-          echo "🚀 Starting production stack..."
-          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} up -d
+          # Wait for PostgreSQL to be ready
+          sleep 10
+          for i in {1..30}; do
+            if sudo -u n8n podman exec n8n-postgres pg_isready -U n8n; then
+              echo "✅ PostgreSQL is ready"
+              break
+            fi
+            echo "Waiting for PostgreSQL... ($i/30)"
+            sleep 2
+          done
 
-          # Wait for services to initialize
-          echo "⏳ Waiting for services to start..."
-          sleep 45
+      - name: Start Redis
+        run: |
+          echo "📮 Starting Redis..."
+          sudo -u n8n podman run -d \
+            --name n8n-redis \
+            --network n8n-network \
+            -v ${{ env.DEPLOYMENT_PATH }}/redis_data:/data:Z \
+            -p 6379:6379 \
+            --restart always \
+            docker.io/library/redis:7-alpine \
+            redis-server --appendonly yes
+
+          # Wait for Redis to be ready
+          sleep 5
+          for i in {1..10}; do
+            if sudo -u n8n podman exec n8n-redis redis-cli ping; then
+              echo "✅ Redis is ready"
+              break
+            fi
+            echo "Waiting for Redis... ($i/10)"
+            sleep 2
+          done
+
+      - name: Start n8n Worker 1
+        run: |
+          echo "🔧 Starting n8n Worker 1..."
+          sudo -u n8n podman run -d \
+            --name n8n-worker-1 \
+            --network n8n-network \
+            -e DB_TYPE=postgresdb \
+            -e DB_POSTGRESDB_HOST=n8n-postgres \
+            -e DB_POSTGRESDB_PORT=5432 \
+            -e DB_POSTGRESDB_DATABASE=n8n \
+            -e DB_POSTGRESDB_USER=n8n \
+            -e DB_POSTGRESDB_PASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
+            -e EXECUTIONS_MODE=queue \
+            -e QUEUE_BULL_REDIS_HOST=n8n-redis \
+            -e QUEUE_BULL_REDIS_PORT=6379 \
+            -e QUEUE_HEALTH_CHECK_ACTIVE=true \
+            -e N8N_CONCURRENCY_PRODUCTION_LIMIT=10 \
+            -e N8N_ENCRYPTION_KEY="${N8N_ENCRYPTION_KEY:-your-encryption-key-here}" \
+            -e GENERIC_TIMEZONE="America/Mexico_City" \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_data/worker1:/home/node/.n8n:Z \
+            --restart always \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            worker
+
+      - name: Start n8n Worker 2
+        run: |
+          echo "🔧 Starting n8n Worker 2..."
+          sudo -u n8n podman run -d \
+            --name n8n-worker-2 \
+            --network n8n-network \
+            -e DB_TYPE=postgresdb \
+            -e DB_POSTGRESDB_HOST=n8n-postgres \
+            -e DB_POSTGRESDB_PORT=5432 \
+            -e DB_POSTGRESDB_DATABASE=n8n \
+            -e DB_POSTGRESDB_USER=n8n \
+            -e DB_POSTGRESDB_PASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
+            -e EXECUTIONS_MODE=queue \
+            -e QUEUE_BULL_REDIS_HOST=n8n-redis \
+            -e QUEUE_BULL_REDIS_PORT=6379 \
+            -e QUEUE_HEALTH_CHECK_ACTIVE=true \
+            -e N8N_CONCURRENCY_PRODUCTION_LIMIT=10 \
+            -e N8N_ENCRYPTION_KEY="${N8N_ENCRYPTION_KEY:-your-encryption-key-here}" \
+            -e GENERIC_TIMEZONE="America/Mexico_City" \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_data/worker2:/home/node/.n8n:Z \
+            --restart always \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            worker
+
+      - name: Start n8n Main
+        run: |
+          echo "🚀 Starting n8n Main..."
+          sudo -u n8n podman run -d \
+            --name n8n \
+            --network n8n-network \
+            -e DB_TYPE=postgresdb \
+            -e DB_POSTGRESDB_HOST=n8n-postgres \
+            -e DB_POSTGRESDB_PORT=5432 \
+            -e DB_POSTGRESDB_DATABASE=n8n \
+            -e DB_POSTGRESDB_USER=n8n \
+            -e DB_POSTGRESDB_PASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
+            -e EXECUTIONS_MODE=queue \
+            -e QUEUE_BULL_REDIS_HOST=n8n-redis \
+            -e QUEUE_BULL_REDIS_PORT=6379 \
+            -e N8N_BASIC_AUTH_ACTIVE="${N8N_BASIC_AUTH_ACTIVE:-true}" \
+            -e N8N_BASIC_AUTH_USER="${N8N_BASIC_AUTH_USER:-admin}" \
+            -e N8N_BASIC_AUTH_PASSWORD="${N8N_BASIC_AUTH_PASSWORD:-changeme}" \
+            -e N8N_HOST="n8n.labjp.xyz" \
+            -e N8N_PORT=5678 \
+            -e N8N_PROTOCOL=https \
+            -e WEBHOOK_URL="https://n8n.labjp.xyz" \
+            -e EXECUTIONS_DATA_SAVE_ON_ERROR=all \
+            -e EXECUTIONS_DATA_SAVE_ON_SUCCESS=all \
+            -e EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true \
+            -e EXECUTIONS_DATA_MAX_AGE=336 \
+            -e EXECUTIONS_DATA_PRUNE=true \
+            -e N8N_SECURE_COOKIE=false \
+            -e N8N_BLOCK_ENV_ACCESS_IN_NODE=false \
+            -e N8N_ENCRYPTION_KEY="${N8N_ENCRYPTION_KEY:-your-encryption-key-here}" \
+            -e GENERIC_TIMEZONE="America/Mexico_City" \
+            -e N8N_METRICS=true \
+            -e N8N_METRICS_INCLUDE_DEFAULT=true \
+            -v ${{ env.DEPLOYMENT_PATH }}/n8n_data/main:/home/node/.n8n:Z \
+            -p 5678:5678 \
+            --restart always \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Start Backup Service
+        run: |
+          echo "💾 Starting Backup Service..."
+          sudo -u n8n podman run -d \
+            --name n8n-postgres-backup \
+            --network n8n-network \
+            -e PGPASSWORD="${POSTGRES_PASSWORD:-n8n_secure_password_123}" \
+            -v ${{ env.DEPLOYMENT_PATH }}/postgres_backups:/backups:Z \
+            --restart always \
+            docker.io/library/postgres:15-alpine \
+            sh -c 'while true; do
+              timestamp=$(date +%Y%m%d_%H%M%S);
+              pg_dump -h n8n-postgres -U n8n -d n8n > /backups/n8n_backup_$timestamp.sql;
+              echo "Backup completed: n8n_backup_$timestamp.sql";
+              find /backups -name "n8n_backup_*.sql" -mtime +7 -delete;
+              echo "Old backups cleaned";
+              sleep 86400;
+            done'
 
       - name: Health checks
         run: |
-          cd ${{ env.DEPLOYMENT_PATH }}
-
           echo "🔍 Checking service health..."
 
-          # Check container status
-          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} ps
-
-          # Check Redis
-          echo "Checking Redis..."
-          sudo -u n8n podman exec n8n-redis redis-cli ping || exit 1
-
-          # Check PostgreSQL
-          echo "Checking PostgreSQL..."
-          sudo -u n8n podman exec n8n-postgres pg_isready -U n8n || exit 1
+          # Check containers are running
+          echo "=== Container Status ==="
+          sudo -u n8n podman ps
 
           # Check n8n main instance
           echo "Checking n8n main instance..."
-          max_attempts=15
+          max_attempts=20
           attempt=1
 
           while [ $attempt -le $max_attempts ]; do
@@ -121,31 +294,13 @@ jobs:
 
           if [ $attempt -gt $max_attempts ]; then
             echo "❌ n8n health check failed after $max_attempts attempts"
-            sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} logs --tail=100 n8n
+            sudo -u n8n podman logs n8n
             exit 1
           fi
-
-      - name: Verify workers
-        run: |
-          cd ${{ env.DEPLOYMENT_PATH }}
-
-          echo "🔧 Checking worker status..."
-
-          # Check if workers are running
-          sudo -u n8n podman ps | grep n8n-worker || exit 1
-
-          # Show worker logs
-          echo "Worker 1 status:"
-          sudo -u n8n podman logs --tail=20 n8n-worker-1
-
-          echo "Worker 2 status:"
-          sudo -u n8n podman logs --tail=20 n8n-worker-2
 
       - name: Show deployment summary
         if: always()
         run: |
-          cd ${{ env.DEPLOYMENT_PATH }}
-
           echo "📊 === Deployment Summary ==="
           echo "Environment: ${{ inputs.environment || 'production' }}"
           echo "Stack components:"
@@ -158,11 +313,11 @@ jobs:
 
           echo ""
           echo "=== Container Status ==="
-          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} ps
+          sudo -u n8n podman ps
 
           echo ""
           echo "=== Recent n8n logs ==="
-          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} logs --tail=30 n8n
+          sudo -u n8n podman logs --tail=30 n8n
 
       - name: Deployment notification
         if: always()
