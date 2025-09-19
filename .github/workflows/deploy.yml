@@ -1,0 +1,295 @@
+name: Deploy n8n with PostgreSQL
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'docker/**'
+      - 'packages/**'
+      - 'Dockerfile'
+      - '.github/workflows/deploy.yml'
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DEPLOYMENT_PATH: /opt/n8n
+  APP_USER: n8n
+  APP_PORT: 5678
+
+jobs:
+  # ============================================
+  # BUILD & PUSH
+  # ============================================
+  build:
+    name: 🔨 Build n8n Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ inputs.environment || 'production' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/images/n8n/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  # ============================================
+  # SECURITY SCAN
+  # ============================================
+  scan:
+    name: 🔒 Security Scan
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build.outputs.image }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ============================================
+  # DEPLOY TO PRODUCTION
+  # ============================================
+  deploy:
+    name: 🚀 Deploy n8n
+    needs: [build, scan]
+    runs-on: [self-hosted]
+    environment: ${{ inputs.environment || 'production' }}
+
+    steps:
+      - name: Deploy with Podman
+        run: |
+          echo "🚀 Starting n8n deployment..."
+
+          # Configuration
+          IMAGE="${{ needs.build.outputs.image }}"
+          CONTAINER_RUNTIME="podman"
+
+          # Check if running as correct user
+          if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
+            echo "⚠️ Switching to user ${{ env.APP_USER }}..."
+            SUDO_PREFIX="sudo -u ${{ env.APP_USER }}"
+          else
+            SUDO_PREFIX=""
+          fi
+
+          # Stop existing containers
+          echo "🛑 Stopping existing containers..."
+          $SUDO_PREFIX $CONTAINER_RUNTIME stop n8n 2>/dev/null || true
+          $SUDO_PREFIX $CONTAINER_RUNTIME stop n8n-postgres 2>/dev/null || true
+          $SUDO_PREFIX $CONTAINER_RUNTIME rm -f n8n n8n-postgres 2>/dev/null || true
+
+          # Create network
+          echo "🌐 Creating network..."
+          $SUDO_PREFIX $CONTAINER_RUNTIME network create n8n-network 2>/dev/null || true
+
+          # Deploy PostgreSQL
+          echo "🗄️ Starting PostgreSQL..."
+          $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
+            --name n8n-postgres \
+            --network n8n-network \
+            --restart unless-stopped \
+            -e POSTGRES_USER=n8n \
+            -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD || 'n8n' }}" \
+            -e POSTGRES_DB=n8n \
+            -v n8n-postgres-data:/var/lib/postgresql/data \
+            docker.io/postgres:15-alpine
+
+          # Wait for PostgreSQL
+          echo "⏳ Waiting for PostgreSQL..."
+          sleep 15
+
+          # Login to registry
+          echo "${{ secrets.GITHUB_TOKEN }}" | $SUDO_PREFIX $CONTAINER_RUNTIME login ${{ env.REGISTRY }} \
+            -u ${{ github.actor }} --password-stdin
+
+          # Pull new image
+          echo "📥 Pulling image..."
+          $SUDO_PREFIX $CONTAINER_RUNTIME pull $IMAGE
+
+          # Deploy n8n
+          echo "🚀 Starting n8n..."
+          $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
+            --name n8n \
+            --network n8n-network \
+            --restart unless-stopped \
+            -p ${{ env.APP_PORT }}:5678 \
+            -e DB_TYPE=postgresdb \
+            -e DB_POSTGRESDB_HOST=n8n-postgres \
+            -e DB_POSTGRESDB_PORT=5432 \
+            -e DB_POSTGRESDB_DATABASE=n8n \
+            -e DB_POSTGRESDB_USER=n8n \
+            -e DB_POSTGRESDB_PASSWORD="${{ secrets.POSTGRES_PASSWORD || 'n8n' }}" \
+            -e N8N_ENCRYPTION_KEY="${{ secrets.N8N_ENCRYPTION_KEY || 'n8n' }}" \
+            -e N8N_HOST="${{ secrets.N8N_HOST || 'localhost' }}" \
+            -e N8N_PORT=5678 \
+            -e N8N_PROTOCOL="http" \
+            -e EXECUTIONS_MODE="queue" \
+            -e QUEUE_BULL_REDIS_HOST="redis" \
+            -e GENERIC_TIMEZONE="America/Santiago" \
+            -v n8n-data:/home/node/.n8n \
+            $IMAGE
+
+          echo "✅ Deployment completed!"
+
+  # ============================================
+  # HEALTH CHECK
+  # ============================================
+  health-check:
+    name: ✅ Health Verification
+    needs: deploy
+    runs-on: [self-hosted]
+
+    steps:
+      - name: Check PostgreSQL
+        run: |
+          echo "🔍 Checking PostgreSQL..."
+
+          # Check if running as correct user
+          if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
+            SUDO_PREFIX="sudo -u ${{ env.APP_USER }}"
+          else
+            SUDO_PREFIX=""
+          fi
+
+          for i in {1..10}; do
+            if $SUDO_PREFIX podman exec n8n-postgres pg_isready -U n8n 2>/dev/null; then
+              echo "✅ PostgreSQL is ready"
+              break
+            else
+              echo "⏳ Attempt $i/10 - PostgreSQL not ready..."
+              sleep 5
+            fi
+          done
+
+      - name: Check n8n Application
+        run: |
+          echo "🔍 Checking n8n..."
+
+          URL="http://localhost:${{ env.APP_PORT }}"
+
+          for i in {1..10}; do
+            if curl -f -s -o /dev/null -w "%{http_code}" "$URL/healthz" | grep -q "200\|204"; then
+              echo "✅ n8n is healthy"
+              echo "🎉 Deployment successful!"
+              echo "📦 Access n8n at: $URL"
+              exit 0
+            else
+              echo "⏳ Attempt $i/10 - Waiting for n8n..."
+              sleep 10
+            fi
+          done
+
+          echo "❌ Health check failed"
+          exit 1
+
+      - name: Show running containers
+        if: always()
+        run: |
+          if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
+            sudo -u ${{ env.APP_USER }} podman ps
+          else
+            podman ps
+          fi
+
+  # ============================================
+  # SUMMARY
+  # ============================================
+  summary:
+    name: 📊 Deployment Summary
+    needs: [build, deploy, health-check]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# 📊 n8n Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## 🔨 Build" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ needs.build.result }}" == "success" ]]; then
+            echo "✅ Image built and pushed" >> $GITHUB_STEP_SUMMARY
+            echo "- Image: ${{ needs.build.outputs.image }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Build failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Deployment" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "✅ Successfully deployed" >> $GITHUB_STEP_SUMMARY
+            echo "- Environment: ${{ inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Port: ${{ env.APP_PORT }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Deployment failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Health Check" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ needs.health-check.result }}" == "success" ]]; then
+            echo "✅ All services healthy" >> $GITHUB_STEP_SUMMARY
+            echo "- PostgreSQL: Running" >> $GITHUB_STEP_SUMMARY
+            echo "- n8n: Running" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Health check failed" >> $GITHUB_STEP_SUMMARY
+          fi

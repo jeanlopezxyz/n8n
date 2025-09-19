@@ -9,10 +9,12 @@ Configure these secrets in your GitHub repository settings:
 # These are already available by default:
 GITHUB_TOKEN: Automatically provided by GitHub Actions
 
+# Required secrets:
+POSTGRES_PASSWORD: <database-password>
+
 # Optional secrets you may want to configure:
 N8N_ENCRYPTION_KEY: <your-encryption-key>
-N8N_USER_MANAGEMENT_JWT_SECRET: <your-jwt-secret>
-WEBHOOK_URL: <your-webhook-url>
+N8N_HOST: <your-hostname>
 ```
 
 ### Environment Variables
@@ -51,16 +53,15 @@ cd /home/n8n
 
 ### Manual Deployment
 ```bash
-# Deploy with new build
-gh workflow run n8n-cicd.yml \
-  --field environment=production \
-  --field skip_build=false
+# Deploy to production (default)
+gh workflow run deploy.yml
 
-# Deploy existing image
-gh workflow run n8n-cicd.yml \
-  --field environment=production \
-  --field skip_build=true \
-  --field image_tag=latest
+# Deploy to specific environment
+gh workflow run deploy.yml \
+  --field environment=staging
+
+gh workflow run deploy.yml \
+  --field environment=development
 ```
 
 ### Automatic Deployment
