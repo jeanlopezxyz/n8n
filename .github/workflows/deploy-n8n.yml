@@ -28,63 +28,88 @@ env:
 jobs:
   deploy:
     name: Deploy n8n Stack
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, n8n]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.8.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-      - name: Add server to known hosts
+      - name: Verify running as n8n user
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+          echo "Current user: $(whoami)"
+          echo "Home directory: $HOME"
+          echo "Working directory: $(pwd)"
 
-      - name: Copy docker-compose file to server
+      - name: Copy docker-compose file
         run: |
-          scp docker-compose-postgres.yml ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ env.DEPLOYMENT_PATH }}/
+          # Copy compose file to deployment directory
+          sudo -u n8n cp -f docker-compose-postgres.yml ${{ env.DEPLOYMENT_PATH }}/
+
+          # Ensure proper permissions
+          sudo -u n8n chmod 644 ${{ env.DEPLOYMENT_PATH }}/docker-compose-postgres.yml
 
       - name: Deploy n8n stack
         run: |
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
-            cd ${{ env.DEPLOYMENT_PATH }}
+          cd ${{ env.DEPLOYMENT_PATH }}
 
-            # Pull latest images
-            docker-compose -f ${{ env.COMPOSE_FILE }} pull
+          # Pull latest images
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} pull
 
-            # Stop existing containers
-            docker-compose -f ${{ env.COMPOSE_FILE }} down
+          # Stop existing containers gracefully
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} down --timeout 30
 
-            # Start new containers
-            docker-compose -f ${{ env.COMPOSE_FILE }} up -d
+          # Start new containers
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} up -d
 
-            # Wait for services to be healthy
-            sleep 30
+          # Wait for services to be healthy
+          echo "Waiting for services to start..."
+          sleep 30
 
-            # Check health status
-            docker-compose -f ${{ env.COMPOSE_FILE }} ps
-
-            # Show logs for debugging if needed
-            docker-compose -f ${{ env.COMPOSE_FILE }} logs --tail=50
-          EOF
-
-      - name: Verify deployment
+      - name: Health check
         run: |
-          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
-            # Check if n8n is responding
-            curl -f http://localhost:5678/healthz || exit 1
-            echo "n8n is running successfully!"
-          EOF
+          cd ${{ env.DEPLOYMENT_PATH }}
+
+          # Check container status
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} ps
+
+          # Verify n8n is responding
+          max_attempts=10
+          attempt=1
+
+          while [ $attempt -le $max_attempts ]; do
+            if curl -f http://localhost:5678/healthz; then
+              echo "✅ n8n is healthy and responding!"
+              break
+            else
+              echo "Attempt $attempt/$max_attempts: n8n not ready yet..."
+              sleep 10
+              attempt=$((attempt + 1))
+            fi
+          done
+
+          if [ $attempt -gt $max_attempts ]; then
+            echo "❌ n8n health check failed after $max_attempts attempts"
+            sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} logs --tail=100 n8n
+            exit 1
+          fi
+
+      - name: Show deployment logs
+        if: always()
+        run: |
+          cd ${{ env.DEPLOYMENT_PATH }}
+          echo "=== Recent n8n logs ==="
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} logs --tail=50 n8n
+
+          echo "=== Container status ==="
+          sudo -u n8n docker-compose -f ${{ env.COMPOSE_FILE }} ps
 
       - name: Notify deployment status
         if: always()
         run: |
           if [ "${{ job.status }}" == "success" ]; then
             echo "✅ n8n deployed successfully to ${{ inputs.environment || 'production' }}"
+            echo "🌐 Access URL: https://n8n.labjp.xyz"
           else
             echo "❌ n8n deployment failed"
+            echo "Check the logs above for details"
           fi
