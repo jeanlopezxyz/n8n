@@ -92,6 +92,34 @@ jobs:
     environment: ${{ inputs.environment || 'production' }}
 
     steps:
+      - name: Pre-deployment checks
+        run: |
+          echo "🔍 Running pre-deployment checks..."
+
+          # Check disk space
+          echo "💾 Disk space available:"
+          df -h /var/lib/containers 2>/dev/null || df -h /var/lib/docker 2>/dev/null || df -h /
+
+          # Check current volume usage if exists
+          if command -v podman &> /dev/null; then
+            CONTAINER_RUNTIME="podman"
+          else
+            CONTAINER_RUNTIME="docker"
+          fi
+
+          echo "📦 Current volumes:"
+          $CONTAINER_RUNTIME volume ls || true
+
+          # Show volume sizes if they exist
+          for vol in n8n-data n8n-postgres-data; do
+            if $CONTAINER_RUNTIME volume inspect $vol &>/dev/null; then
+              echo "Volume $vol info:"
+              $CONTAINER_RUNTIME volume inspect $vol | grep -E '(Mountpoint|Size|CreatedAt)' || true
+              echo "Actual disk usage:"
+              du -sh $($CONTAINER_RUNTIME volume inspect $vol --format '{{.Mountpoint}}') 2>/dev/null || echo "Cannot determine size"
+            fi
+          done
+
       - name: Deploy with Podman
         run: |
           echo "🚀 Starting n8n deployment..."
@@ -99,6 +127,10 @@ jobs:
           # Configuration
           IMAGE="${{ needs.prepare.outputs.image }}"
           CONTAINER_RUNTIME="podman"
+
+          # Volume size limits (optional - uncomment to enable)
+          # POSTGRES_VOLUME_SIZE="10G"  # PostgreSQL data
+          # N8N_VOLUME_SIZE="50G"        # n8n workflows and data
 
           # Check if running as correct user
           if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
@@ -117,6 +149,25 @@ jobs:
           # Create network
           echo "🌐 Creating network..."
           $SUDO_PREFIX $CONTAINER_RUNTIME network create n8n-network 2>/dev/null || true
+
+          # Create volumes if they don't exist
+          echo "📁 Creating volumes..."
+
+          # PostgreSQL volume
+          if ! $SUDO_PREFIX $CONTAINER_RUNTIME volume exists n8n-postgres-data 2>/dev/null; then
+            echo "Creating PostgreSQL volume (unlimited size by default)..."
+            $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-postgres-data
+            # To limit size on creation (requires specific storage driver):
+            # $SUDO_PREFIX $CONTAINER_RUNTIME volume create --opt o=size=${POSTGRES_VOLUME_SIZE} n8n-postgres-data
+          fi
+
+          # n8n data volume
+          if ! $SUDO_PREFIX $CONTAINER_RUNTIME volume exists n8n-data 2>/dev/null; then
+            echo "Creating n8n data volume (unlimited size by default)..."
+            $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-data
+            # To limit size on creation (requires specific storage driver):
+            # $SUDO_PREFIX $CONTAINER_RUNTIME volume create --opt o=size=${N8N_VOLUME_SIZE} n8n-data
+          fi
 
           # Deploy PostgreSQL
           echo "🗄️ Starting PostgreSQL..."
@@ -214,14 +265,31 @@ jobs:
           echo "❌ Health check failed"
           exit 1
 
-      - name: Show running containers
+      - name: Show deployment status
         if: always()
         run: |
           if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
-            sudo -u ${{ env.APP_USER }} podman ps
+            SUDO_PREFIX="sudo -u ${{ env.APP_USER }}"
           else
-            podman ps
+            SUDO_PREFIX=""
           fi
+
+          echo "📦 Running containers:"
+          $SUDO_PREFIX podman ps
+
+          echo ""
+          echo "💾 Volume usage:"
+          for vol in n8n-data n8n-postgres-data; do
+            if $SUDO_PREFIX podman volume exists $vol 2>/dev/null; then
+              echo "Volume: $vol"
+              MOUNT_POINT=$($SUDO_PREFIX podman volume inspect $vol --format '{{.Mountpoint}}')
+              du -sh $MOUNT_POINT 2>/dev/null || echo "  Size: Unable to determine"
+            fi
+          done
+
+          echo ""
+          echo "📊 System disk usage:"
+          df -h / | grep -E '(Filesystem|^/)'
 
   # ============================================
   # SUMMARY
