@@ -28,7 +28,7 @@ env:
 jobs:
   deploy:
     name: Deploy n8n Production Stack
-    runs-on: [self-hosted, n8n]
+    runs-on: n8n
 
     steps:
       - name: Checkout code
