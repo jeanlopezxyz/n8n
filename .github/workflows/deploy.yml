@@ -30,14 +30,12 @@ env:
   APP_USER: n8n
   APP_PORT: 5678
   # Resource limits for medium load (100-500 workflows/hour)
-  # Adjust these based on your needs
+  # Note: CPU limits don't work with Podman rootless (cgroups v2)
+  # Memory limits still provide protection against runaway processes
   POSTGRES_MEMORY: 1536m  # 1.5GB for PostgreSQL
-  POSTGRES_CPU: "1.0"     # 1 CPU core
   REDIS_MEMORY: 512m      # 512MB for Redis
-  REDIS_CPU: "0.5"        # 0.5 CPU core
   N8N_MEMORY: 2560m       # 2.5GB for n8n
-  N8N_CPU: "2.0"          # 2 CPU cores
-  # Total: 4.5GB RAM, 3.5 CPU cores
+  # Total: 4.5GB RAM
 
 jobs:
   # ============================================
@@ -103,15 +101,14 @@ jobs:
           $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-data 2>/dev/null || true
           $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-redis-data 2>/dev/null || true
 
-          # Deploy PostgreSQL with resource limits for medium load
-          echo "🗄️ Starting PostgreSQL (1.5GB RAM, 1 CPU)..."
+          # Deploy PostgreSQL with memory limits (CPU limits don't work in rootless)
+          echo "🗄️ Starting PostgreSQL (1.5GB RAM limit)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n-postgres \
             --network n8n-network \
             --restart unless-stopped \
             --memory="${{ env.POSTGRES_MEMORY }}" \
             --memory-swap="${{ env.POSTGRES_MEMORY }}" \
-            --cpus="${{ env.POSTGRES_CPU }}" \
             -e POSTGRES_USER=n8n \
             -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD || 'n8n' }}" \
             -e POSTGRES_DB=n8n \
@@ -124,15 +121,14 @@ jobs:
             -c work_mem=4MB \
             -c max_connections=100
 
-          # Deploy Redis with resource limits for medium load
-          echo "🔴 Starting Redis (512MB RAM, 0.5 CPU)..."
+          # Deploy Redis with memory limits
+          echo "🔴 Starting Redis (512MB RAM limit)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n-redis \
             --network n8n-network \
             --restart unless-stopped \
             --memory="${{ env.REDIS_MEMORY }}" \
             --memory-swap="${{ env.REDIS_MEMORY }}" \
-            --cpus="${{ env.REDIS_CPU }}" \
             -v n8n-redis-data:/data \
             docker.io/redis:7-alpine \
             redis-server \
@@ -151,15 +147,14 @@ jobs:
           echo "📥 Pulling official n8n image..."
           $SUDO_PREFIX $CONTAINER_RUNTIME pull $IMAGE
 
-          # Deploy n8n with resource limits for medium load
-          echo "🚀 Starting n8n (2.5GB RAM, 2 CPUs)..."
+          # Deploy n8n with memory limits
+          echo "🚀 Starting n8n (2.5GB RAM limit)..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n \
             --network n8n-network \
             --restart unless-stopped \
             --memory="${{ env.N8N_MEMORY }}" \
             --memory-swap="${{ env.N8N_MEMORY }}" \
-            --cpus="${{ env.N8N_CPU }}" \
             -p ${{ env.APP_PORT }}:5678 \
             -e DB_TYPE=postgresdb \
             -e DB_POSTGRESDB_HOST=n8n-postgres \
@@ -259,6 +254,10 @@ jobs:
           $SUDO_PREFIX podman ps
 
           echo ""
+          echo "💾 Memory usage (if supported):"
+          $SUDO_PREFIX podman stats --no-stream 2>/dev/null || echo "Stats not available in rootless mode"
+
+          echo ""
           echo "💾 Volume usage:"
           for vol in n8n-data n8n-postgres-data n8n-redis-data; do
             if $SUDO_PREFIX podman volume exists $vol 2>/dev/null; then
@@ -288,9 +287,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "## 🏗️ Stack Components" >> $GITHUB_STEP_SUMMARY
-          echo "- PostgreSQL 15 (Database)" >> $GITHUB_STEP_SUMMARY
-          echo "- Redis 7 (Queue & Cache)" >> $GITHUB_STEP_SUMMARY
-          echo "- n8n (Workflow Automation)" >> $GITHUB_STEP_SUMMARY
+          echo "- PostgreSQL 15 (Database) - 1.5GB RAM limit" >> $GITHUB_STEP_SUMMARY
+          echo "- Redis 7 (Queue & Cache) - 512MB RAM limit" >> $GITHUB_STEP_SUMMARY
+          echo "- n8n (Workflow Automation) - 2.5GB RAM limit" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "## 📦 Image" >> $GITHUB_STEP_SUMMARY
@@ -305,6 +304,7 @@ jobs:
             echo "- Environment: ${{ inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
             echo "- Port: ${{ env.APP_PORT }}" >> $GITHUB_STEP_SUMMARY
             echo "- Execution Mode: Queue (with Redis)" >> $GITHUB_STEP_SUMMARY
+            echo "- Memory Protection: Enabled" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Deployment failed" >> $GITHUB_STEP_SUMMARY
           fi
@@ -321,7 +321,7 @@ jobs:
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🎯 Benefits" >> $GITHUB_STEP_SUMMARY
-          echo "- Better performance with Redis queue" >> $GITHUB_STEP_SUMMARY
-          echo "- Improved reliability" >> $GITHUB_STEP_SUMMARY
-          echo "- Scalability ready" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎯 Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- Total RAM allocated: 4.5GB" >> $GITHUB_STEP_SUMMARY
+          echo "- CPU limits: Not available (Podman rootless)" >> $GITHUB_STEP_SUMMARY
+          echo "- Supports: 100-500 workflows/hour" >> $GITHUB_STEP_SUMMARY
