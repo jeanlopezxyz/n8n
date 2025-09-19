@@ -62,7 +62,11 @@ RUN cd /usr/local/lib/node_modules/n8n && \
     mkdir -p /home/node/.n8n && \
     chown -R node:node /home/node
 
-RUN cd /usr/local/lib/node_modules/n8n/node_modules/pdfjs-dist && npm install @napi-rs/canvas
+# Install optional canvas dependency for pdfjs-dist if it exists
+RUN if [ -d /usr/local/lib/node_modules/n8n/node_modules/pdfjs-dist ]; then \
+        cd /usr/local/lib/node_modules/n8n/node_modules/pdfjs-dist && \
+        npm install @napi-rs/canvas || true; \
+    fi
 
 EXPOSE 5678/tcp
 USER node
