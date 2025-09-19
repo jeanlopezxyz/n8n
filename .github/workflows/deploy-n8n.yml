@@ -70,12 +70,31 @@ jobs:
       - name: Stop existing containers
         run: |
           echo "📦 Stopping and removing existing containers..."
+          # List all containers first
+          echo "Current containers:"
+          sudo -u n8n podman ps -a | grep -E "n8n|redis|postgres" || true
+
           # Force stop and remove all n8n related containers
           for container in n8n n8n-worker-1 n8n-worker-2 n8n-redis n8n-postgres n8n-postgres-backup; do
-            echo "Stopping $container..."
-            sudo -u n8n podman stop $container 2>/dev/null || true
-            sudo -u n8n podman rm -f $container 2>/dev/null || true
+            echo "Processing $container..."
+            # Get container ID if it exists
+            container_id=$(sudo -u n8n podman ps -aq --filter "name=^${container}$" 2>/dev/null || true)
+            if [ ! -z "$container_id" ]; then
+              echo "Found container $container with ID: $container_id"
+              sudo -u n8n podman stop $container_id 2>/dev/null || true
+              sudo -u n8n podman rm -f $container_id 2>/dev/null || true
+              echo "Removed container $container"
+            else
+              echo "Container $container not found"
+            fi
           done
+
+          # Double check and clean up any remaining containers
+          echo "Final cleanup..."
+          sudo -u n8n podman rm -f $(sudo -u n8n podman ps -aq --filter "name=n8n*" 2>/dev/null) 2>/dev/null || true
+          sudo -u n8n podman rm -f $(sudo -u n8n podman ps -aq --filter "name=*redis*" 2>/dev/null) 2>/dev/null || true
+          sudo -u n8n podman rm -f $(sudo -u n8n podman ps -aq --filter "name=*postgres*" 2>/dev/null) 2>/dev/null || true
+
           echo "All containers stopped and removed"
 
       - name: Pull latest images
@@ -89,6 +108,7 @@ jobs:
         run: |
           echo "🗄️ Starting PostgreSQL..."
           sudo -u n8n podman run -d \
+            --replace \
             --name n8n-postgres \
             --network n8n-network \
             --memory=1g \
@@ -120,6 +140,7 @@ jobs:
         run: |
           echo "📮 Starting Redis..."
           sudo -u n8n podman run -d \
+            --replace \
             --name n8n-redis \
             --network n8n-network \
             --memory=512m \
@@ -146,6 +167,7 @@ jobs:
         run: |
           echo "🔧 Starting n8n Worker 1..."
           sudo -u n8n podman run -d \
+            --replace \
             --name n8n-worker-1 \
             --network n8n-network \
             --memory=2g \
@@ -178,6 +200,7 @@ jobs:
         run: |
           echo "🔧 Starting n8n Worker 2..."
           sudo -u n8n podman run -d \
+            --replace \
             --name n8n-worker-2 \
             --network n8n-network \
             --memory=2g \
@@ -210,6 +233,7 @@ jobs:
         run: |
           echo "🚀 Starting n8n Main..."
           sudo -u n8n podman run -d \
+            --replace \
             --name n8n \
             --network n8n-network \
             --memory=4g \
@@ -256,6 +280,7 @@ jobs:
         run: |
           echo "💾 Starting Backup Service..."
           sudo -u n8n podman run -d \
+            --replace \
             --name n8n-postgres-backup \
             --network n8n-network \
             --memory=256m \
