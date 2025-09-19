@@ -28,75 +28,8 @@ env:
   DEPLOYMENT_PATH: /opt/n8n
 
 jobs:
-  build-and-push:
-    name: Build and Push to GitHub Registry
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install pnpm
-        run: npm install -g pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build n8n
-        run: pnpm build
-
-      - name: Create compiled artifacts
-        run: |
-          mkdir -p compiled
-          cp -r packages compiled/
-          cp package.json compiled/
-          cp pnpm-lock.yaml compiled/
-          cp pnpm-workspace.yaml compiled/
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./docker/images/n8n/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            NODE_VERSION=22
-            N8N_VERSION=${{ github.sha }}
-
   deploy:
     name: Deploy n8n Production Stack with Podman
-    needs: build-and-push
     runs-on: [self-hosted, Linux, X64]
 
     steps:
@@ -109,11 +42,9 @@ jobs:
           echo "Current user: $(whoami)"
           echo "Deployment path: ${{ env.DEPLOYMENT_PATH }}"
           echo "Environment: ${{ inputs.environment || 'production' }}"
-          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Image: docker.io/n8nio/n8n:latest"
 
-      - name: Login to GitHub Container Registry
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | sudo -u n8n podman login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+      # Using official n8n image from Docker Hub - no login required
 
       - name: Create deployment directories and network
         run: |
@@ -138,14 +69,19 @@ jobs:
 
       - name: Stop existing containers
         run: |
-          echo "📦 Stopping existing containers..."
-          sudo -u n8n podman stop n8n n8n-worker-1 n8n-worker-2 n8n-redis n8n-postgres n8n-postgres-backup 2>/dev/null || true
-          sudo -u n8n podman rm n8n n8n-worker-1 n8n-worker-2 n8n-redis n8n-postgres n8n-postgres-backup 2>/dev/null || true
+          echo "📦 Stopping and removing existing containers..."
+          # Force stop and remove all n8n related containers
+          for container in n8n n8n-worker-1 n8n-worker-2 n8n-redis n8n-postgres n8n-postgres-backup; do
+            echo "Stopping $container..."
+            sudo -u n8n podman stop $container 2>/dev/null || true
+            sudo -u n8n podman rm -f $container 2>/dev/null || true
+          done
+          echo "All containers stopped and removed"
 
       - name: Pull latest images
         run: |
           echo "📥 Pulling latest images..."
-          sudo -u n8n podman pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          sudo -u n8n podman pull docker.io/n8nio/n8n:latest
           sudo -u n8n podman pull docker.io/library/postgres:15-alpine
           sudo -u n8n podman pull docker.io/library/redis:7-alpine
 
@@ -225,6 +161,7 @@ jobs:
             -e QUEUE_BULL_REDIS_HOST=n8n-redis \
             -e QUEUE_BULL_REDIS_PORT=6379 \
             -e QUEUE_HEALTH_CHECK_ACTIVE=true \
+            -e OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true \
             -e N8N_CONCURRENCY_PRODUCTION_LIMIT="${WORKER_CONCURRENCY:-10}" \
             -e N8N_ENCRYPTION_KEY="${N8N_ENCRYPTION_KEY:-your-encryption-key-here}" \
             -e GENERIC_TIMEZONE="America/Mexico_City" \
@@ -232,7 +169,7 @@ jobs:
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_worker1:/home/node/.n8n:Z \
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files:Z \
             --restart always \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            docker.io/n8nio/n8n:latest \
             n8n worker
 
           sleep 5
@@ -256,6 +193,7 @@ jobs:
             -e QUEUE_BULL_REDIS_HOST=n8n-redis \
             -e QUEUE_BULL_REDIS_PORT=6379 \
             -e QUEUE_HEALTH_CHECK_ACTIVE=true \
+            -e OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true \
             -e N8N_CONCURRENCY_PRODUCTION_LIMIT="${WORKER_CONCURRENCY:-10}" \
             -e N8N_ENCRYPTION_KEY="${N8N_ENCRYPTION_KEY:-your-encryption-key-here}" \
             -e GENERIC_TIMEZONE="America/Mexico_City" \
@@ -263,7 +201,7 @@ jobs:
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_worker2:/home/node/.n8n:Z \
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files:Z \
             --restart always \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            docker.io/n8nio/n8n:latest \
             n8n worker
 
           sleep 5
@@ -286,6 +224,7 @@ jobs:
             -e EXECUTIONS_MODE=queue \
             -e QUEUE_BULL_REDIS_HOST=n8n-redis \
             -e QUEUE_BULL_REDIS_PORT=6379 \
+            -e OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true \
             -e N8N_BASIC_AUTH_ACTIVE="${N8N_BASIC_AUTH_ACTIVE:-true}" \
             -e N8N_BASIC_AUTH_USER="${N8N_BASIC_AUTH_USER:-admin}" \
             -e N8N_BASIC_AUTH_PASSWORD="${N8N_BASIC_AUTH_PASSWORD:-changeme}" \
@@ -311,7 +250,7 @@ jobs:
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_custom:/home/node/.n8n/custom:Z \
             -p 5678:5678 \
             --restart always \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            docker.io/n8nio/n8n:latest
 
       - name: Start Backup Service
         run: |
@@ -390,7 +329,7 @@ jobs:
         run: |
           echo "📊 === Deployment Summary ==="
           echo "Environment: ${{ inputs.environment || 'production' }}"
-          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Image: docker.io/n8nio/n8n:latest"
           echo ""
           echo "Stack components:"
           echo "  - PostgreSQL 15 (Database) - 1GB RAM, 1 CPU"
