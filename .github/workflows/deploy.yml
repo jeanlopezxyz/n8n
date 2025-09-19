@@ -168,13 +168,15 @@ jobs:
             -e N8N_ENCRYPTION_KEY="${{ secrets.N8N_ENCRYPTION_KEY || 'n8n' }}" \
             -e N8N_HOST="${{ secrets.N8N_HOST || 'localhost' }}" \
             -e N8N_PORT=5678 \
-            -e N8N_PROTOCOL="http" \
+            -e N8N_PROTOCOL="${{ secrets.N8N_PROTOCOL || 'https' }}" \
+            -e WEBHOOK_URL="${{ secrets.WEBHOOK_URL || 'https://localhost' }}" \
             -e EXECUTIONS_MODE="queue" \
             -e QUEUE_BULL_REDIS_HOST="n8n-redis" \
             -e QUEUE_BULL_REDIS_PORT="6379" \
             -e N8N_RUNNERS_ENABLED="true" \
             -e N8N_BLOCK_ENV_ACCESS_IN_NODE="true" \
             -e N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS="true" \
+            -e N8N_SECURE_COOKIE="${{ secrets.N8N_PROTOCOL == 'https' || 'true' }}" \
             -e GENERIC_TIMEZONE="America/Santiago" \
             -v n8n-data:/home/node/.n8n \
             $IMAGE
@@ -240,6 +242,7 @@ jobs:
               echo "n8n is healthy"
               echo "All services running!"
               echo "Access n8n at: $URL"
+              echo "Note: Configure reverse proxy in pfSense for HTTPS access"
               exit 0
             else
               echo "Attempt $i/15 - Waiting for n8n..."
@@ -314,6 +317,7 @@ jobs:
             echo "- Port: ${{ env.APP_PORT }}" >> $GITHUB_STEP_SUMMARY
             echo "- Execution Mode: Queue (with Redis)" >> $GITHUB_STEP_SUMMARY
             echo "- Memory Protection: Enabled" >> $GITHUB_STEP_SUMMARY
+            echo "- SSL/TLS: Configure via pfSense reverse proxy" >> $GITHUB_STEP_SUMMARY
           else
             echo "**Status:** Deployment failed" >> $GITHUB_STEP_SUMMARY
           fi

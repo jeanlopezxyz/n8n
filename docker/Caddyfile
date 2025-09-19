@@ -1,0 +1,80 @@
+# Caddyfile for n8n HTTPS reverse proxy
+# Replace {$N8N_DOMAIN} with your actual domain in environment variables
+
+{$N8N_DOMAIN:localhost} {
+    # Enable automatic HTTPS with Let's Encrypt
+    # Caddy will automatically obtain and renew certificates
+
+    # Security headers
+    header {
+        # Prevent clickjacking
+        X-Frame-Options DENY
+        # Prevent content type sniffing
+        X-Content-Type-Options nosniff
+        # Enable XSS protection
+        X-XSS-Protection "1; mode=block"
+        # Enforce HTTPS
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        # Control referrer information
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Content Security Policy for n8n
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' wss: https:; frame-src 'self'; object-src 'none';"
+        # Remove server information
+        -Server
+    }
+
+    # Reverse proxy to n8n container
+    reverse_proxy n8n:5678 {
+        # Health check
+        health_uri /healthz
+        health_interval 30s
+        health_timeout 5s
+
+        # WebSocket support for n8n live updates
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+
+        # Handle large file uploads
+        header_up X-Forwarded-Port {server_port}
+    }
+
+    # Increase client body size for file uploads
+    request_body {
+        max_size 50MB
+    }
+
+    # Logging
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 100MB
+            roll_keep 5
+        }
+        format json
+        level INFO
+    }
+
+    # Error handling
+    handle_errors {
+        @5xx expression {err.status_code} >= 500
+        handle @5xx {
+            respond "Service temporarily unavailable" 503
+        }
+    }
+}
+
+# Redirect HTTP to HTTPS for production
+http://{$N8N_DOMAIN:localhost} {
+    redir https://{host}{uri} permanent
+}
+
+# Health check endpoint for load balancer/monitoring
+:8080 {
+    respond /health "OK" 200
+
+    # Metrics endpoint (optional, for monitoring)
+    handle /metrics {
+        metrics
+    }
+}
