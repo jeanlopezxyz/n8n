@@ -3,25 +3,28 @@ version: '3.8'
 services:
   # Redis para queue mode y cache
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     container_name: n8n-redis
     restart: always
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - redis_data:/data:Z
     networks:
       - n8n-network
+    mem_limit: ${REDIS_MEMORY_LIMIT:-512m}
+    mem_reservation: ${REDIS_MEMORY_RESERVATION:-256m}
+    cpus: ${REDIS_CPU_LIMIT:-0.5}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAX_MEMORY:-400mb} --maxmemory-policy allkeys-lru
 
   # PostgreSQL database
   postgres:
-    image: postgres:15-alpine
+    image: docker.io/library/postgres:15-alpine
     container_name: n8n-postgres
     restart: always
     environment:
@@ -30,12 +33,16 @@ services:
       - POSTGRES_DB=n8n
       - PGDATA=/var/lib/postgresql/data/pgdata
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - postgres_backups:/backups
+      - postgres_data:/var/lib/postgresql/data:Z
+      - postgres_backups:/backups:Z
     ports:
       - "5432:5432"
     networks:
       - n8n-network
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-1g}
+    mem_reservation: ${POSTGRES_MEMORY_RESERVATION:-512m}
+    cpus: ${POSTGRES_CPU_LIMIT:-1.0}
+    shm_size: ${POSTGRES_SHM_SIZE:-256m}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U n8n"]
       interval: 10s
@@ -50,6 +57,9 @@ services:
     command: worker
     networks:
       - n8n-network
+    mem_limit: ${WORKER_MEMORY_LIMIT:-2g}
+    mem_reservation: ${WORKER_MEMORY_RESERVATION:-1g}
+    cpus: ${WORKER_CPU_LIMIT:-1.0}
     environment:
       # Database Configuration
       - DB_TYPE=postgresdb
@@ -64,7 +74,7 @@ services:
       - QUEUE_BULL_REDIS_HOST=redis
       - QUEUE_BULL_REDIS_PORT=6379
       - QUEUE_HEALTH_CHECK_ACTIVE=true
-      - N8N_CONCURRENCY_PRODUCTION_LIMIT=10
+      - N8N_CONCURRENCY_PRODUCTION_LIMIT=${WORKER_CONCURRENCY:-10}
 
       # Worker Configuration
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-your-encryption-key-here}
@@ -72,8 +82,8 @@ services:
       - TZ=${TZ:-America/Mexico_City}
 
     volumes:
-      - n8n_worker1:/home/node/.n8n
-      - n8n_files:/files
+      - n8n_worker1:/home/node/.n8n:Z
+      - n8n_files:/files:Z
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,6 +103,9 @@ services:
     command: worker
     networks:
       - n8n-network
+    mem_limit: ${WORKER_MEMORY_LIMIT:-2g}
+    mem_reservation: ${WORKER_MEMORY_RESERVATION:-1g}
+    cpus: ${WORKER_CPU_LIMIT:-1.0}
     environment:
       # Database Configuration
       - DB_TYPE=postgresdb
@@ -107,7 +120,7 @@ services:
       - QUEUE_BULL_REDIS_HOST=redis
       - QUEUE_BULL_REDIS_PORT=6379
       - QUEUE_HEALTH_CHECK_ACTIVE=true
-      - N8N_CONCURRENCY_PRODUCTION_LIMIT=10
+      - N8N_CONCURRENCY_PRODUCTION_LIMIT=${WORKER_CONCURRENCY:-10}
 
       # Worker Configuration
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-your-encryption-key-here}
@@ -115,8 +128,8 @@ services:
       - TZ=${TZ:-America/Mexico_City}
 
     volumes:
-      - n8n_worker2:/home/node/.n8n
-      - n8n_files:/files
+      - n8n_worker2:/home/node/.n8n:Z
+      - n8n_files:/files:Z
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,6 +152,9 @@ services:
       - "5678:5678"
     networks:
       - n8n-network
+    mem_limit: ${N8N_MEMORY_LIMIT:-4g}
+    mem_reservation: ${N8N_MEMORY_RESERVATION:-2g}
+    cpus: ${N8N_CPU_LIMIT:-2.0}
     environment:
       # Database Configuration
       - DB_TYPE=postgresdb
@@ -166,7 +182,7 @@ services:
       - EXECUTIONS_DATA_SAVE_ON_ERROR=all
       - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
       - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
-      - EXECUTIONS_DATA_MAX_AGE=336
+      - EXECUTIONS_DATA_MAX_AGE=${EXECUTIONS_MAX_AGE:-336}
       - EXECUTIONS_DATA_PRUNE=true
 
       # Security
@@ -181,11 +197,13 @@ services:
       # Performance
       - N8N_METRICS=true
       - N8N_METRICS_INCLUDE_DEFAULT=true
+      - N8N_PAYLOAD_SIZE_MAX=${N8N_PAYLOAD_SIZE_MAX:-16}
+      - N8N_METRICS_PREFIX=n8n_
 
     volumes:
-      - n8n_files:/files
-      - n8n_custom:/home/node/.n8n/custom
-      - n8n_main:/home/node/.n8n
+      - n8n_files:/files:Z
+      - n8n_custom:/home/node/.n8n/custom:Z
+      - n8n_main:/home/node/.n8n:Z
 
     depends_on:
       postgres:
@@ -206,24 +224,27 @@ services:
 
   # Automated backup service
   postgres-backup:
-    image: postgres:15-alpine
+    image: docker.io/library/postgres:15-alpine
     container_name: n8n-postgres-backup
     restart: always
     networks:
       - n8n-network
+    mem_limit: ${BACKUP_MEMORY_LIMIT:-256m}
+    mem_reservation: ${BACKUP_MEMORY_RESERVATION:-128m}
+    cpus: ${BACKUP_CPU_LIMIT:-0.25}
     environment:
       - PGPASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
     volumes:
-      - postgres_backups:/backups
-      - ./scripts:/scripts:ro
+      - postgres_backups:/backups:Z
+      - ./scripts:/scripts:ro,Z
     command: >
       sh -c 'while true; do
         timestamp=$$(date +\%Y\%m\%d_\%H\%M\%S);
         pg_dump -h postgres -U n8n -d n8n > /backups/n8n_backup_$$timestamp.sql;
         echo "Backup completed: n8n_backup_$$timestamp.sql";
-        find /backups -name "n8n_backup_*.sql" -mtime +7 -delete;
+        find /backups -name "n8n_backup_*.sql" -mtime +${BACKUP_RETENTION_DAYS:-7} -delete;
         echo "Old backups cleaned";
-        sleep 86400;
+        sleep ${BACKUP_INTERVAL:-86400};
       done'
     depends_on:
       postgres:
@@ -236,17 +257,49 @@ networks:
 volumes:
   postgres_data:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${POSTGRES_DATA_PATH:-/opt/n8n/postgres_data}
   postgres_backups:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${POSTGRES_BACKUP_PATH:-/opt/n8n/postgres_backups}
   redis_data:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${REDIS_DATA_PATH:-/opt/n8n/redis_data}
   n8n_files:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${N8N_FILES_PATH:-/opt/n8n/n8n_files}
   n8n_custom:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${N8N_CUSTOM_PATH:-/opt/n8n/n8n_custom}
   n8n_main:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${N8N_MAIN_PATH:-/opt/n8n/n8n_main}
   n8n_worker1:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${N8N_WORKER1_PATH:-/opt/n8n/n8n_worker1}
   n8n_worker2:
     driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${N8N_WORKER2_PATH:-/opt/n8n/n8n_worker2}

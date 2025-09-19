@@ -115,10 +115,23 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | sudo -u n8n podman login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
-      - name: Create deployment directory
+      - name: Create deployment directories
         run: |
+          # Create base directory
           sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}
-          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/.env
+
+          # Create data directories for volumes
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/postgres_data
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/postgres_backups
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/redis_data
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/n8n_files
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/n8n_custom
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/n8n_main
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/n8n_worker1
+          sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/n8n_worker2
+
+          # Set proper permissions
+          sudo chown -R n8n:n8n ${{ env.DEPLOYMENT_PATH }}
 
       - name: Copy docker-compose files
         run: |
@@ -134,8 +147,21 @@ jobs:
           cat > ${{ env.DEPLOYMENT_PATH }}/.env << EOF
           # PostgreSQL Configuration
           POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+          POSTGRES_MEMORY_LIMIT=1g
+          POSTGRES_MEMORY_RESERVATION=512m
+          POSTGRES_CPU_LIMIT=1.0
+          POSTGRES_SHM_SIZE=256m
+          POSTGRES_DATA_PATH=/opt/n8n/postgres_data
+          POSTGRES_BACKUP_PATH=/opt/n8n/postgres_backups
 
-          # n8n Configuration
+          # Redis Configuration
+          REDIS_MEMORY_LIMIT=512m
+          REDIS_MEMORY_RESERVATION=256m
+          REDIS_CPU_LIMIT=0.5
+          REDIS_MAX_MEMORY=400mb
+          REDIS_DATA_PATH=/opt/n8n/redis_data
+
+          # n8n Main Configuration
           N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-true}
           N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
           N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-changeme}
@@ -143,7 +169,32 @@ jobs:
           N8N_PROTOCOL=https
           WEBHOOK_URL=https://n8n.labjp.xyz
           N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-your-encryption-key-here}
+          N8N_MEMORY_LIMIT=4g
+          N8N_MEMORY_RESERVATION=2g
+          N8N_CPU_LIMIT=2.0
+          N8N_PAYLOAD_SIZE_MAX=16
+          N8N_MAIN_PATH=/opt/n8n/n8n_main
+          N8N_FILES_PATH=/opt/n8n/n8n_files
+          N8N_CUSTOM_PATH=/opt/n8n/n8n_custom
+
+          # Workers Configuration
+          WORKER_MEMORY_LIMIT=2g
+          WORKER_MEMORY_RESERVATION=1g
+          WORKER_CPU_LIMIT=1.0
+          WORKER_CONCURRENCY=10
+          N8N_WORKER1_PATH=/opt/n8n/n8n_worker1
+          N8N_WORKER2_PATH=/opt/n8n/n8n_worker2
+
+          # Backup Configuration
+          BACKUP_MEMORY_LIMIT=256m
+          BACKUP_MEMORY_RESERVATION=128m
+          BACKUP_CPU_LIMIT=0.25
+          BACKUP_RETENTION_DAYS=7
+          BACKUP_INTERVAL=86400
+
+          # General Configuration
           TZ=America/Mexico_City
+          EXECUTIONS_MAX_AGE=336
           EOF
 
           sudo -u n8n chmod 600 ${{ env.DEPLOYMENT_PATH }}/.env
