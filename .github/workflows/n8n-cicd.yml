@@ -1,0 +1,319 @@
+name: n8n CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'docker/**'
+      - 'packages/**'
+      - 'Dockerfile'
+      - 'docker-compose*.yml'
+      - 'deploy*.sh'
+      - '.github/workflows/n8n-cicd.yml'
+
+  workflow_dispatch:
+    inputs:
+      skip_build:
+        description: 'Skip build stage (use existing image)'
+        required: false
+        default: false
+        type: boolean
+      environment:
+        description: 'Deployment environment'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/n8n
+
+jobs:
+  # ============================================
+  # STAGE 1: BUILD & PUSH IMAGE
+  # ============================================
+  build-and-push:
+    name: 🏗️ Build and Push Image
+    if: ${{ !inputs.skip_build }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔐 Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📋 Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{date 'YYYYMMDD-HHmmss'}}
+
+      - name: 🏗️ Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/images/n8n/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            N8N_VERSION=latest
+
+      - name: 📤 Output image info
+        id: image
+        run: |
+          echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          echo "✅ Image built: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
+      - name: 🏷️ Set version output
+        id: version
+        run: |
+          echo "version=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+  # ============================================
+  # STAGE 2: SECURITY SCAN
+  # ============================================
+  security-scan:
+    name: 🔒 Security Scan
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: 🔍 Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build-and-push.outputs.image || 'ghcr.io/labjp-xyz/n8n:latest' }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: 📊 Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ============================================
+  # STAGE 3: DEPLOY TO PRODUCTION
+  # ============================================
+  deploy:
+    name: 🚀 Deploy to Production
+    needs: [build-and-push, security-scan]
+    if: |
+      always() &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
+      (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
+    runs-on: self-hosted
+    environment:
+      name: ${{ inputs.environment || 'production' }}
+      url: http://${{ vars.PRODUCTION_HOST || 'server1.labjp.xyz' }}:5678
+
+    steps:
+      - name: 📥 Checkout deployment scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            docker-compose-postgres.yml
+            deploy-n8n-postgres.sh
+
+      - name: 🛑 Stop existing containers
+        run: |
+          sudo -u n8n bash -c '
+            echo "🛑 Stopping existing containers..."
+
+            # Stop all n8n and postgres containers
+            podman stop $(podman ps -q --filter "name=n8n") 2>/dev/null || true
+            podman stop $(podman ps -q --filter "name=postgres") 2>/dev/null || true
+
+            # Remove containers
+            podman rm -f $(podman ps -aq --filter "name=n8n") 2>/dev/null || true
+            podman rm -f $(podman ps -aq --filter "name=postgres") 2>/dev/null || true
+
+            echo "✅ Cleanup completed"
+          '
+
+      - name: 🔧 Setup deployment environment
+        run: |
+          sudo -u n8n bash -c '
+            # Create deployment directory
+            mkdir -p /opt/n8n
+            cd /opt/n8n
+
+            # Copy deployment files
+            cp ${{ github.workspace }}/docker-compose-postgres.yml /opt/n8n/
+            cp ${{ github.workspace }}/deploy-n8n-postgres.sh /opt/n8n/
+            chmod +x /opt/n8n/deploy-n8n-postgres.sh
+
+            # Setup environment variables
+            if [ ! -f .env ]; then
+              echo "🔐 Generating secure credentials..."
+              echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" > .env
+              echo "N8N_BASIC_AUTH_PASSWORD=$(openssl rand -hex 12)" >> .env
+              echo "N8N_ENCRYPTION_KEY=$(openssl rand -base64 48)" >> .env
+              echo "N8N_HOST=$(hostname -f)" >> .env
+              echo "TZ=America/Mexico_City" >> .env
+            fi
+
+            # Source environment
+            source .env
+            echo "✅ Environment ready"
+          '
+
+      - name: 🐳 Deploy with Podman
+        run: |
+          sudo -u n8n bash -c '
+            cd /opt/n8n
+
+            # Load environment
+            source .env
+
+            # Create network
+            podman network create n8n-network 2>/dev/null || true
+
+            # Start PostgreSQL
+            echo "🗄️ Starting PostgreSQL..."
+            podman run -d \
+              --name n8n-postgres \
+              --network n8n-network \
+              -e POSTGRES_USER=n8n \
+              -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+              -e POSTGRES_DB=n8n \
+              -v postgres_data:/var/lib/postgresql/data \
+              --restart always \
+              docker.io/library/postgres:15-alpine
+
+            # Wait for PostgreSQL
+            sleep 15
+
+            # Pull latest n8n image
+            echo "📦 Pulling n8n image..."
+            IMAGE="${{ needs.build-and-push.outputs.image || env.REGISTRY }}/{{ env.IMAGE_NAME }}:latest"
+            podman pull $IMAGE
+
+            # Start n8n
+            echo "🚀 Starting n8n..."
+            podman run -d \
+              --name n8n \
+              --network n8n-network \
+              -e DB_TYPE=postgresdb \
+              -e DB_POSTGRESDB_HOST=n8n-postgres \
+              -e DB_POSTGRESDB_PORT=5432 \
+              -e DB_POSTGRESDB_DATABASE=n8n \
+              -e DB_POSTGRESDB_USER=n8n \
+              -e DB_POSTGRESDB_PASSWORD="${POSTGRES_PASSWORD}" \
+              -e N8N_BASIC_AUTH_ACTIVE=true \
+              -e N8N_BASIC_AUTH_USER=admin \
+              -e N8N_BASIC_AUTH_PASSWORD="${N8N_BASIC_AUTH_PASSWORD}" \
+              -p 5678:5678 \
+              -v n8n_data:/home/node/.n8n \
+              --restart always \
+              $IMAGE
+
+            # Show status
+            echo "📦 Running containers:"
+            podman ps
+          '
+
+      - name: ✅ Health check
+        run: |
+          sudo -u n8n bash -c '
+            cd /opt/n8n
+
+            echo "⏳ Waiting for services..."
+            sleep 30
+
+            # Check PostgreSQL
+            echo "🔍 Checking PostgreSQL..."
+            podman exec n8n-postgres pg_isready -U n8n || exit 1
+
+            # Check n8n
+            echo "🔍 Checking n8n..."
+            if curl -f http://localhost:5678/healthz; then
+              echo "✅ n8n is healthy!"
+            else
+              echo "❌ n8n health check failed"
+              podman logs n8n --tail=50
+              exit 1
+            fi
+
+            echo ""
+            echo "======================================"
+            echo "✅ Deployment successful!"
+            echo "======================================"
+            echo "🌐 URL: http://$(hostname -f):5678"
+            echo "👤 User: admin"
+            echo "🔑 Password: Check /opt/n8n/.env"
+            echo "======================================"
+          '
+
+      - name: 📊 Send deployment notification
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            echo "✅ Deployment completed successfully"
+          else
+            echo "❌ Deployment failed - check logs"
+          fi
+
+  # ============================================
+  # STAGE 4: POST-DEPLOYMENT TESTS
+  # ============================================
+  smoke-test:
+    name: 🧪 Smoke Tests
+    needs: deploy
+    if: success()
+    runs-on: self-hosted
+
+    steps:
+      - name: 🔍 Test n8n API
+        run: |
+          echo "Testing n8n API endpoints..."
+
+          # Test health endpoint
+          curl -f http://localhost:5678/healthz || exit 1
+
+          # Test main page loads
+          curl -f http://localhost:5678 || exit 1
+
+          echo "✅ All smoke tests passed"
+
+      - name: 📈 Check resource usage
+        run: |
+          sudo -u n8n bash -c '
+            echo "📊 Resource Usage:"
+            podman stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
+          '
