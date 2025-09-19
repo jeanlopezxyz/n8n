@@ -6,7 +6,7 @@ on:
       - main
       - master
     paths:
-      - 'docker compose*.yml'
+      - 'podman-compose*.yml'
       - 'Dockerfile'
       - '.github/workflows/deploy-n8n.yml'
 
@@ -23,7 +23,7 @@ on:
 
 env:
   DEPLOYMENT_PATH: /opt/n8n
-  COMPOSE_FILE: docker compose-production.yml
+  COMPOSE_FILE: podman-compose-production.yml
 
 jobs:
   deploy:
@@ -49,8 +49,8 @@ jobs:
 
       - name: Copy deployment files
         run: |
-          # Copy docker compose file
-          sudo -u n8n cp -f docker compose-production.yml ${{ env.DEPLOYMENT_PATH }}/
+          # Copy podman-compose file
+          sudo -u n8n cp -f podman-compose-production.yml ${{ env.DEPLOYMENT_PATH }}/
 
           # Create .env file if it doesn't exist
           if [ ! -f "${{ env.DEPLOYMENT_PATH }}/.env" ]; then
@@ -59,28 +59,28 @@ jobs:
           fi
 
           # Ensure proper permissions
-          sudo -u n8n chmod 644 ${{ env.DEPLOYMENT_PATH }}/docker compose-production.yml
+          sudo -u n8n chmod 644 ${{ env.DEPLOYMENT_PATH }}/podman-compose-production.yml
 
       - name: Stop existing stack
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
 
           echo "📦 Stopping existing containers..."
-          sudo -u n8n docker compose -f ${{ env.COMPOSE_FILE }} down --timeout 30 || true
+          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} down --timeout 30 || true
 
       - name: Pull latest images
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
 
           echo "📥 Pulling latest images..."
-          sudo -u n8n docker compose -f ${{ env.COMPOSE_FILE }} pull
+          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} pull
 
       - name: Start production stack
         run: |
           cd ${{ env.DEPLOYMENT_PATH }}
 
           echo "🚀 Starting production stack..."
-          sudo -u n8n docker compose -f ${{ env.COMPOSE_FILE }} up -d
+          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} up -d
 
           # Wait for services to initialize
           echo "⏳ Waiting for services to start..."
@@ -93,15 +93,15 @@ jobs:
           echo "🔍 Checking service health..."
 
           # Check container status
-          sudo -u n8n docker compose -f ${{ env.COMPOSE_FILE }} ps
+          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} ps
 
           # Check Redis
           echo "Checking Redis..."
-          sudo -u n8n docker exec n8n-redis redis-cli ping || exit 1
+          sudo -u n8n podman exec n8n-redis redis-cli ping || exit 1
 
           # Check PostgreSQL
           echo "Checking PostgreSQL..."
-          sudo -u n8n docker exec n8n-postgres pg_isready -U n8n || exit 1
+          sudo -u n8n podman exec n8n-postgres pg_isready -U n8n || exit 1
 
           # Check n8n main instance
           echo "Checking n8n main instance..."
@@ -121,7 +121,7 @@ jobs:
 
           if [ $attempt -gt $max_attempts ]; then
             echo "❌ n8n health check failed after $max_attempts attempts"
-            sudo -u n8n docker compose -f ${{ env.COMPOSE_FILE }} logs --tail=100 n8n
+            sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} logs --tail=100 n8n
             exit 1
           fi
 
@@ -132,14 +132,14 @@ jobs:
           echo "🔧 Checking worker status..."
 
           # Check if workers are running
-          sudo -u n8n docker ps | grep n8n-worker || exit 1
+          sudo -u n8n podman ps | grep n8n-worker || exit 1
 
           # Show worker logs
           echo "Worker 1 status:"
-          sudo -u n8n docker logs --tail=20 n8n-worker-1
+          sudo -u n8n podman logs --tail=20 n8n-worker-1
 
           echo "Worker 2 status:"
-          sudo -u n8n docker logs --tail=20 n8n-worker-2
+          sudo -u n8n podman logs --tail=20 n8n-worker-2
 
       - name: Show deployment summary
         if: always()
@@ -158,11 +158,11 @@ jobs:
 
           echo ""
           echo "=== Container Status ==="
-          sudo -u n8n docker compose -f ${{ env.COMPOSE_FILE }} ps
+          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} ps
 
           echo ""
           echo "=== Recent n8n logs ==="
-          sudo -u n8n docker compose -f ${{ env.COMPOSE_FILE }} logs --tail=30 n8n
+          sudo -u n8n podman-compose -f ${{ env.COMPOSE_FILE }} logs --tail=30 n8n
 
       - name: Deployment notification
         if: always()

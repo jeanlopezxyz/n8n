@@ -1,0 +1,252 @@
+version: '3.8'
+
+services:
+  # Redis para queue mode y cache
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: n8n-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data:Z
+    networks:
+      - n8n-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  # PostgreSQL database
+  postgres:
+    image: docker.io/library/postgres:15-alpine
+    container_name: n8n-postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+      - POSTGRES_DB=n8n
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:Z
+      - postgres_backups:/backups:Z
+    ports:
+      - "5432:5432"
+    networks:
+      - n8n-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # n8n worker 1 - Background jobs processor
+  n8n-worker-1:
+    image: ghcr.io/jeanlopezxyz/n8n:latest
+    container_name: n8n-worker-1
+    restart: always
+    command: worker
+    networks:
+      - n8n-network
+    environment:
+      # Database Configuration
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+
+      # Queue Mode Configuration
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_HEALTH_CHECK_ACTIVE=true
+      - N8N_CONCURRENCY_PRODUCTION_LIMIT=10
+
+      # Worker Configuration
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-your-encryption-key-here}
+      - GENERIC_TIMEZONE=${TZ:-America/Mexico_City}
+      - TZ=${TZ:-America/Mexico_City}
+
+    volumes:
+      - n8n_worker1:/home/node/.n8n:Z
+      - n8n_files:/files:Z
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # n8n worker 2 - Additional worker for scaling
+  n8n-worker-2:
+    image: ghcr.io/jeanlopezxyz/n8n:latest
+    container_name: n8n-worker-2
+    restart: always
+    command: worker
+    networks:
+      - n8n-network
+    environment:
+      # Database Configuration
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+
+      # Queue Mode Configuration
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_HEALTH_CHECK_ACTIVE=true
+      - N8N_CONCURRENCY_PRODUCTION_LIMIT=10
+
+      # Worker Configuration
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-your-encryption-key-here}
+      - GENERIC_TIMEZONE=${TZ:-America/Mexico_City}
+      - TZ=${TZ:-America/Mexico_City}
+
+    volumes:
+      - n8n_worker2:/home/node/.n8n:Z
+      - n8n_files:/files:Z
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      n8n-worker-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # n8n main instance - Web UI and API
+  n8n:
+    image: ghcr.io/jeanlopezxyz/n8n:latest
+    container_name: n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    networks:
+      - n8n-network
+    environment:
+      # Database Configuration
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+
+      # Queue Mode Configuration
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+
+      # n8n Configuration
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-true}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-changeme}
+      - N8N_HOST=${N8N_HOST:-n8n.labjp.xyz}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-https}
+      - WEBHOOK_URL=${WEBHOOK_URL:-https://n8n.labjp.xyz}
+
+      # Execution Configuration
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
+      - EXECUTIONS_DATA_MAX_AGE=336
+      - EXECUTIONS_DATA_PRUNE=true
+
+      # Security
+      - N8N_SECURE_COOKIE=false
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-your-encryption-key-here}
+
+      # Timezone
+      - GENERIC_TIMEZONE=${TZ:-America/Mexico_City}
+      - TZ=${TZ:-America/Mexico_City}
+
+      # Performance
+      - N8N_METRICS=true
+      - N8N_METRICS_INCLUDE_DEFAULT=true
+
+    volumes:
+      - n8n_files:/files:Z
+      - n8n_custom:/home/node/.n8n/custom:Z
+      - n8n_main:/home/node/.n8n:Z
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      n8n-worker-1:
+        condition: service_healthy
+      n8n-worker-2:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Automated backup service
+  postgres-backup:
+    image: docker.io/library/postgres:15-alpine
+    container_name: n8n-postgres-backup
+    restart: always
+    networks:
+      - n8n-network
+    environment:
+      - PGPASSWORD=${POSTGRES_PASSWORD:-n8n_secure_password_123}
+    volumes:
+      - postgres_backups:/backups:Z
+      - ./scripts:/scripts:ro,Z
+    command: >
+      sh -c 'while true; do
+        timestamp=$$(date +\%Y\%m\%d_\%H\%M\%S);
+        pg_dump -h postgres -U n8n -d n8n > /backups/n8n_backup_$$timestamp.sql;
+        echo "Backup completed: n8n_backup_$$timestamp.sql";
+        find /backups -name "n8n_backup_*.sql" -mtime +7 -delete;
+        echo "Old backups cleaned";
+        sleep 86400;
+      done'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  n8n-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  postgres_backups:
+    driver: local
+  redis_data:
+    driver: local
+  n8n_files:
+    driver: local
+  n8n_custom:
+    driver: local
+  n8n_main:
+    driver: local
+  n8n_worker1:
+    driver: local
+  n8n_worker2:
+    driver: local
