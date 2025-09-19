@@ -1,16 +1,19 @@
-name: Deploy n8n Application
+name: Deploy n8n with PostgreSQL
 
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
     paths:
+      - 'docker-compose*.yml'
       - 'Dockerfile'
-      - 'database/**'
-      - '.github/workflows/**'
+      - '.github/workflows/deploy-n8n.yml'
+
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy'
+        description: 'Deployment environment'
         required: false
         default: 'production'
         type: choice
@@ -18,11 +21,70 @@ on:
           - production
           - staging
 
+env:
+  DEPLOYMENT_PATH: /opt/n8n
+  COMPOSE_FILE: docker-compose-postgres.yml
+
 jobs:
-  deploy-stack:
-    name: Deploy n8n Complete Stack
-    uses: labjp-xyz/github-workflows/.github/workflows/deploy-n8n.yml@main
-    with:
-      environment: ${{ inputs.environment || 'production' }}
-      n8n-version: 'latest'
-    secrets: inherit
+  deploy:
+    name: Deploy n8n Stack
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy docker-compose file to server
+        run: |
+          scp docker-compose-postgres.yml ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ env.DEPLOYMENT_PATH }}/
+
+      - name: Deploy n8n stack
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            cd ${{ env.DEPLOYMENT_PATH }}
+
+            # Pull latest images
+            docker-compose -f ${{ env.COMPOSE_FILE }} pull
+
+            # Stop existing containers
+            docker-compose -f ${{ env.COMPOSE_FILE }} down
+
+            # Start new containers
+            docker-compose -f ${{ env.COMPOSE_FILE }} up -d
+
+            # Wait for services to be healthy
+            sleep 30
+
+            # Check health status
+            docker-compose -f ${{ env.COMPOSE_FILE }} ps
+
+            # Show logs for debugging if needed
+            docker-compose -f ${{ env.COMPOSE_FILE }} logs --tail=50
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            # Check if n8n is responding
+            curl -f http://localhost:5678/healthz || exit 1
+            echo "n8n is running successfully!"
+          EOF
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ n8n deployed successfully to ${{ inputs.environment || 'production' }}"
+          else
+            echo "❌ n8n deployment failed"
+          fi
