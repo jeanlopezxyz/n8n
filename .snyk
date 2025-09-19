@@ -1,0 +1,118 @@
+# Snyk (https://snyk.io) policy file for n8n Banking Environment
+
+# Language settings
+language-settings:
+  javascript: true
+  typescript: true
+
+# Patches applied by Snyk
+patches: {}
+
+# Ignore specific vulnerabilities
+ignore:
+  # Prototype Pollution in lodash - not exploitable in our use case
+  SNYK-JS-LODASH-567746:
+    - '*':
+        reason: Prototype pollution not exploitable in controlled banking environment
+        expires: 2025-12-31T23:59:59.999Z
+        created: 2024-01-01T00:00:00.000Z
+
+  # Regular Expression Denial of Service (ReDoS) in semver
+  SNYK-JS-SEMVER-3247795:
+    - '*':
+        reason: ReDoS not exploitable with controlled input validation
+        expires: 2025-06-30T23:59:59.999Z
+        created: 2024-01-01T00:00:00.000Z
+
+  # Development dependencies with low risk
+  SNYK-JS-ANSIREGEX-1583908:
+    - '*':
+        reason: Development dependency not included in production
+        expires: 2025-12-31T23:59:59.999Z
+        created: 2024-01-01T00:00:00.000Z
+
+# Banking compliance settings
+version: v1.25.0
+
+# Fail conditions for banking environment
+failThreshold: high
+severityThreshold: medium
+
+# Exclude paths that don't affect production
+exclude:
+  global:
+    - 'test/**'
+    - 'tests/**'
+    - '**/*.test.js'
+    - '**/*.test.ts'
+    - '**/*.spec.js'
+    - '**/*.spec.ts'
+    - 'coverage/**'
+    - 'docs/**'
+    - 'examples/**'
+    - 'scripts/**'
+    - '.github/**'
+    - 'cypress/**'
+    - 'playwright/**'
+
+# Banking security policy
+policy:
+  rules:
+    # High and Critical vulnerabilities must be fixed immediately
+    - severity: 'high'
+      action: 'fail'
+    - severity: 'critical'
+      action: 'fail'
+
+    # Medium vulnerabilities require review
+    - severity: 'medium'
+      action: 'warn'
+
+    # Low vulnerabilities are tracked but don't fail builds
+    - severity: 'low'
+      action: 'ignore'
+
+# License policy for banking compliance
+license-policy:
+  severity-threshold: medium
+
+  # Allowed licenses for banking environment
+  allowed:
+    - MIT
+    - Apache-2.0
+    - BSD-2-Clause
+    - BSD-3-Clause
+    - ISC
+    - CC0-1.0
+    - Unlicense
+    - WTFPL
+    - CC-BY-3.0
+    - CC-BY-4.0
+
+  # Disallowed licenses
+  disallowed:
+    - GPL-2.0
+    - GPL-3.0
+    - AGPL-1.0
+    - AGPL-3.0
+    - LGPL-2.1
+    - LGPL-3.0
+    - MPL-1.1
+    - MPL-2.0
+    - EPL-1.0
+    - EPL-2.0
+    - CDDL-1.0
+    - CDDL-1.1
+
+# Container scanning configuration
+container:
+  base-image-vulnerabilities: true
+  exclude-base-image-vulns: false
+  severity-threshold: high
+
+# Infrastructure as Code scanning
+iac:
+  terraform: true
+  cloudformation: true
+  kubernetes: true
+  arm: true

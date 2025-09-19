@@ -1,0 +1,332 @@
+# Prometheus Rules for n8n Banking Platform
+# Banking-specific alerting and monitoring rules
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: n8n-banking-alerts
+  namespace: monitoring
+  labels:
+    app: n8n
+    component: monitoring
+    compliance: banking
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # Critical Banking Alerts
+    - name: n8n.banking.critical
+      interval: 30s
+      rules:
+        # Service availability (99.9% SLA requirement)
+        - alert: N8nServiceDown
+          expr: up{job="n8n"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            category: availability
+            compliance: "pci-dss,sox,iso27001"
+            priority: P1
+          annotations:
+            summary: "n8n service is down"
+            description: "n8n service has been down for more than 1 minute. This violates banking SLA requirements."
+            runbook_url: "https://runbooks.banking.internal/n8n/service-down"
+            impact: "Critical - Banking operations may be impacted"
+
+        # Database connectivity
+        - alert: N8nDatabaseConnectionLost
+          expr: n8n_database_connection_errors_total > 0
+          for: 30s
+          labels:
+            severity: critical
+            category: database
+            compliance: "pci-dss,sox"
+            priority: P1
+          annotations:
+            summary: "n8n database connection lost"
+            description: "n8n cannot connect to the database. This may cause data loss or corruption."
+            runbook_url: "https://runbooks.banking.internal/n8n/database-connection"
+
+        # Memory usage critical
+        - alert: N8nHighMemoryUsage
+          expr: (container_memory_usage_bytes{container="n8n"} / container_spec_memory_limit_bytes{container="n8n"}) > 0.9
+          for: 5m
+          labels:
+            severity: critical
+            category: performance
+            priority: P1
+          annotations:
+            summary: "n8n memory usage is critically high"
+            description: "n8n memory usage is above 90% for 5 minutes. Risk of OOM kill."
+
+        # Workflow execution failures
+        - alert: N8nWorkflowExecutionFailureRate
+          expr: (rate(n8n_workflow_executions_failed_total[5m]) / rate(n8n_workflow_executions_total[5m])) > 0.1
+          for: 2m
+          labels:
+            severity: critical
+            category: workflows
+            compliance: "sox"
+            priority: P1
+          annotations:
+            summary: "High workflow execution failure rate"
+            description: "More than 10% of workflow executions are failing. This may impact banking operations."
+
+    # High Priority Banking Alerts
+    - name: n8n.banking.high
+      interval: 60s
+      rules:
+        # Response time degradation
+        - alert: N8nHighResponseTime
+          expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="n8n"}[5m])) > 2
+          for: 3m
+          labels:
+            severity: high
+            category: performance
+            compliance: "iso27001"
+            priority: P2
+          annotations:
+            summary: "n8n response time is high"
+            description: "95th percentile response time is above 2 seconds for 3 minutes."
+
+        # SSL certificate expiration
+        - alert: N8nSSLCertificateExpiring
+          expr: probe_ssl_earliest_cert_expiry - time() < 86400 * 30
+          for: 1h
+          labels:
+            severity: high
+            category: security
+            compliance: "pci-dss"
+            priority: P2
+          annotations:
+            summary: "SSL certificate expiring soon"
+            description: "SSL certificate will expire in less than 30 days."
+
+        # Disk usage warning
+        - alert: N8nHighDiskUsage
+          expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.2
+          for: 10m
+          labels:
+            severity: high
+            category: storage
+            priority: P2
+          annotations:
+            summary: "Disk usage is high"
+            description: "Less than 20% disk space available."
+
+        # Pod restart frequency
+        - alert: N8nPodRestartingFrequently
+          expr: rate(kube_pod_container_status_restarts_total{container="n8n"}[15m]) > 0.1
+          for: 10m
+          labels:
+            severity: high
+            category: stability
+            priority: P2
+          annotations:
+            summary: "n8n pod restarting frequently"
+            description: "n8n pod is restarting more than 6 times per hour."
+
+    # Medium Priority Banking Alerts
+    - name: n8n.banking.medium
+      interval: 120s
+      rules:
+        # Queue size growing
+        - alert: N8nQueueSizeGrowing
+          expr: n8n_queue_size > 1000
+          for: 15m
+          labels:
+            severity: medium
+            category: performance
+            priority: P3
+          annotations:
+            summary: "n8n queue size is growing"
+            description: "Queue size has been above 1000 for 15 minutes."
+
+        # API rate limiting
+        - alert: N8nAPIRateLimitApproaching
+          expr: rate(n8n_api_requests_total[5m]) > 100
+          for: 10m
+          labels:
+            severity: medium
+            category: api
+            priority: P3
+          annotations:
+            summary: "API rate limit approaching"
+            description: "API request rate is approaching configured limits."
+
+        # Webhook failures
+        - alert: N8nWebhookFailures
+          expr: rate(n8n_webhook_failures_total[10m]) > 0.05
+          for: 5m
+          labels:
+            severity: medium
+            category: webhooks
+            priority: P3
+          annotations:
+            summary: "Webhook failures detected"
+            description: "Webhook failure rate is above acceptable threshold."
+
+    # Security and Compliance Alerts
+    - name: n8n.banking.security
+      interval: 60s
+      rules:
+        # Unauthorized access attempts
+        - alert: N8nUnauthorizedAccess
+          expr: rate(n8n_http_requests_total{status=~"401|403"}[5m]) > 0.1
+          for: 2m
+          labels:
+            severity: high
+            category: security
+            compliance: "pci-dss,sox,iso27001"
+            priority: P1
+          annotations:
+            summary: "Unauthorized access attempts detected"
+            description: "High rate of 401/403 responses indicating potential unauthorized access."
+
+        # Suspicious workflow executions
+        - alert: N8nSuspiciousWorkflowActivity
+          expr: rate(n8n_workflow_executions_total{workflow_name=~".*admin.*|.*system.*|.*config.*"}[5m]) > 0.5
+          for: 1m
+          labels:
+            severity: high
+            category: security
+            compliance: "sox"
+            priority: P1
+          annotations:
+            summary: "Suspicious workflow activity detected"
+            description: "High rate of potentially sensitive workflow executions."
+
+        # Data export activities
+        - alert: N8nDataExportActivity
+          expr: rate(n8n_data_export_total[10m]) > 0.1
+          for: 1m
+          labels:
+            severity: medium
+            category: compliance
+            compliance: "pci-dss,gdpr"
+            priority: P2
+          annotations:
+            summary: "Data export activity detected"
+            description: "Data export operations detected - compliance review may be required."
+
+        # Failed authentication
+        - alert: N8nAuthenticationFailures
+          expr: rate(n8n_auth_failures_total[5m]) > 1
+          for: 2m
+          labels:
+            severity: medium
+            category: security
+            compliance: "iso27001"
+            priority: P2
+          annotations:
+            summary: "Authentication failures detected"
+            description: "High rate of authentication failures may indicate brute force attack."
+
+    # Business Continuity Alerts
+    - name: n8n.banking.business_continuity
+      interval: 300s
+      rules:
+        # Backup failures
+        - alert: N8nBackupFailure
+          expr: time() - n8n_last_successful_backup_timestamp > 86400
+          for: 1h
+          labels:
+            severity: high
+            category: backup
+            compliance: "sox,iso27001"
+            priority: P2
+          annotations:
+            summary: "n8n backup failure"
+            description: "No successful backup in the last 24 hours."
+
+        # Disaster recovery test due
+        - alert: N8nDRTestOverdue
+          expr: time() - n8n_last_dr_test_timestamp > 86400 * 90
+          for: 1h
+          labels:
+            severity: medium
+            category: disaster_recovery
+            compliance: "sox,iso27001"
+            priority: P3
+          annotations:
+            summary: "Disaster recovery test overdue"
+            description: "Disaster recovery test is overdue (>90 days)."
+
+        # Cross-region replication lag
+        - alert: N8nCrossRegionReplicationLag
+          expr: n8n_cross_region_replication_lag_seconds > 300
+          for: 10m
+          labels:
+            severity: medium
+            category: disaster_recovery
+            compliance: "sox"
+            priority: P3
+          annotations:
+            summary: "Cross-region replication lag detected"
+            description: "Cross-region replication is lagging by more than 5 minutes."
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: n8n-banking-sli-slo
+  namespace: monitoring
+  labels:
+    app: n8n
+    component: sli-slo
+    compliance: banking
+spec:
+  groups:
+    # Service Level Indicators (SLI) and Objectives (SLO)
+    - name: n8n.banking.sli_slo
+      interval: 60s
+      rules:
+        # Availability SLI (99.9% target)
+        - record: n8n:availability_sli
+          expr: avg_over_time(up{job="n8n"}[5m])
+
+        # Latency SLI (95th percentile < 2s)
+        - record: n8n:latency_sli
+          expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="n8n"}[5m]))
+
+        # Error rate SLI (< 1%)
+        - record: n8n:error_rate_sli
+          expr: rate(http_requests_total{job="n8n",status=~"5.."}[5m]) / rate(http_requests_total{job="n8n"}[5m])
+
+        # Workflow success rate SLI (> 99%)
+        - record: n8n:workflow_success_rate_sli
+          expr: rate(n8n_workflow_executions_successful_total[5m]) / rate(n8n_workflow_executions_total[5m])
+
+        # SLO burn rate alerts
+        - alert: N8nAvailabilitySLOBurnRate
+          expr: n8n:availability_sli < 0.999
+          for: 5m
+          labels:
+            severity: high
+            category: slo
+            priority: P2
+          annotations:
+            summary: "Availability SLO burn rate exceeded"
+            description: "Service availability is below 99.9% SLO target."
+
+        - alert: N8nLatencySLOBurnRate
+          expr: n8n:latency_sli > 2
+          for: 5m
+          labels:
+            severity: high
+            category: slo
+            priority: P2
+          annotations:
+            summary: "Latency SLO burn rate exceeded"
+            description: "95th percentile latency is above 2 second SLO target."
+
+        - alert: N8nErrorRateSLOBurnRate
+          expr: n8n:error_rate_sli > 0.01
+          for: 5m
+          labels:
+            severity: high
+            category: slo
+            priority: P2
+          annotations:
+            summary: "Error rate SLO burn rate exceeded"
+            description: "Error rate is above 1% SLO target."

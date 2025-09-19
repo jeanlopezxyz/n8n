@@ -1,0 +1,341 @@
+# ArgoCD Application for n8n Banking Platform
+# GitOps deployment configuration for banking compliance
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: n8n-banking-platform
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: n8n
+    app.kubernetes.io/component: workflow-automation
+    app.kubernetes.io/part-of: banking-platform
+    compliance.banking/pci-dss: "true"
+    compliance.banking/sox: "true"
+    compliance.banking/iso27001: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+    argocd.argoproj.io/sync-options: "Prune=true,Replace=true"
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: banking-alerts
+    notifications.argoproj.io/subscribe.on-sync-succeeded.slack: banking-deployments
+spec:
+  project: banking-platform
+
+  # Source configuration
+  source:
+    repoURL: https://github.com/banking-org/n8n-banking-config.git
+    targetRevision: main
+    path: manifests/environments/production
+
+    # Helm configuration for n8n
+    helm:
+      releaseName: n8n-banking
+
+      # Values for banking compliance
+      valueFiles:
+        - values-banking.yaml
+        - values-production.yaml
+        - values-compliance.yaml
+
+      # Banking-specific parameters
+      parameters:
+        - name: global.environment
+          value: production
+        - name: global.compliance.enabled
+          value: "true"
+        - name: global.security.strictMode
+          value: "true"
+        - name: n8n.encryption.enabled
+          value: "true"
+        - name: n8n.audit.enabled
+          value: "true"
+        - name: postgresql.encryption.enabled
+          value: "true"
+        - name: redis.encryption.enabled
+          value: "true"
+
+  # Destination configuration
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: n8n-banking
+
+  # Sync policy for banking compliance
+  syncPolicy:
+    # Automated sync with strict validation
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+
+    # Sync options for banking environment
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - RespectIgnoreDifferences=true
+      - ApplyOutOfSyncOnly=true
+
+    # Retry configuration for resilience
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+
+  # Ignore differences for operational data
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    - group: ""
+      kind: Secret
+      jsonPointers:
+        - /data
+
+  # Info for banking operations team
+  info:
+    - name: Environment
+      value: Production Banking
+    - name: Compliance
+      value: PCI-DSS, SOX, ISO 27001
+    - name: Data Classification
+      value: Confidential
+    - name: Backup Required
+      value: "true"
+    - name: Disaster Recovery
+      value: "true"
+
+---
+# Application Set for multi-environment deployment
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: n8n-banking-environments
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: n8n
+    app.kubernetes.io/component: applicationset
+spec:
+  generators:
+    # Environment-based generation
+    - list:
+        elements:
+          - environment: dev
+            cluster: https://k8s-dev.banking.internal
+            namespace: n8n-dev
+            replicaCount: "2"
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "1000m"
+                memory: "2Gi"
+
+          - environment: staging
+            cluster: https://k8s-staging.banking.internal
+            namespace: n8n-staging
+            replicaCount: "3"
+            resources:
+              requests:
+                cpu: "1000m"
+                memory: "2Gi"
+              limits:
+                cpu: "2000m"
+                memory: "4Gi"
+
+          - environment: uat
+            cluster: https://k8s-uat.banking.internal
+            namespace: n8n-uat
+            replicaCount: "3"
+            resources:
+              requests:
+                cpu: "1000m"
+                memory: "2Gi"
+              limits:
+                cpu: "2000m"
+                memory: "4Gi"
+
+          - environment: production
+            cluster: https://k8s-prod.banking.internal
+            namespace: n8n-production
+            replicaCount: "5"
+            resources:
+              requests:
+                cpu: "2000m"
+                memory: "4Gi"
+              limits:
+                cpu: "4000m"
+                memory: "8Gi"
+
+  template:
+    metadata:
+      name: "n8n-{{environment}}"
+      labels:
+        environment: "{{environment}}"
+        app.kubernetes.io/name: n8n
+        compliance.banking/monitored: "true"
+
+    spec:
+      project: banking-platform
+
+      source:
+        repoURL: https://github.com/banking-org/n8n-banking-config.git
+        targetRevision: main
+        path: "manifests/environments/{{environment}}"
+
+        helm:
+          releaseName: "n8n-{{environment}}"
+          valueFiles:
+            - "values-{{environment}}.yaml"
+            - values-banking.yaml
+
+          parameters:
+            - name: global.environment
+              value: "{{environment}}"
+            - name: replicaCount
+              value: "{{replicaCount}}"
+            - name: resources.requests.cpu
+              value: "{{resources.requests.cpu}}"
+            - name: resources.requests.memory
+              value: "{{resources.requests.memory}}"
+            - name: resources.limits.cpu
+              value: "{{resources.limits.cpu}}"
+            - name: resources.limits.memory
+              value: "{{resources.limits.memory}}"
+
+      destination:
+        server: "{{cluster}}"
+        namespace: "{{namespace}}"
+
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+
+---
+# ArgoCD Project for Banking Platform
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: banking-platform
+  namespace: argocd
+  labels:
+    compliance.banking/project: "true"
+spec:
+  description: Banking Platform Project for n8n Workflow Automation
+
+  # Source repositories (restricted to banking-approved repos)
+  sourceRepos:
+    - "https://github.com/banking-org/n8n-banking-config.git"
+    - "https://charts.n8n.io"
+    - "https://charts.bitnami.com/bitnami"
+
+  # Destination clusters and namespaces
+  destinations:
+    - namespace: "n8n-*"
+      server: "https://k8s-*.banking.internal"
+    - namespace: "n8n-*"
+      server: "https://kubernetes.default.svc"
+
+  # RBAC configuration for banking compliance
+  roles:
+    # Banking Operations Team
+    - name: banking-ops
+      description: Banking Operations Team - Full Access
+      policies:
+        - p, proj:banking-platform:banking-ops, applications, *, banking-platform/*, allow
+        - p, proj:banking-platform:banking-ops, logs, get, banking-platform/*, allow
+        - p, proj:banking-platform:banking-ops, exec, create, banking-platform/*, allow
+      groups:
+        - "banking-ops"
+        - "platform-team"
+
+    # Banking Security Team
+    - name: banking-security
+      description: Banking Security Team - Read Only + Sync
+      policies:
+        - p, proj:banking-platform:banking-security, applications, get, banking-platform/*, allow
+        - p, proj:banking-platform:banking-security, applications, sync, banking-platform/*, allow
+        - p, proj:banking-platform:banking-security, logs, get, banking-platform/*, allow
+      groups:
+        - "security-team"
+        - "compliance-team"
+
+    # Developers (Limited Access)
+    - name: developers
+      description: Development Team - Limited Access
+      policies:
+        - p, proj:banking-platform:developers, applications, get, banking-platform/n8n-dev*, allow
+        - p, proj:banking-platform:developers, applications, sync, banking-platform/n8n-dev*, allow
+        - p, proj:banking-platform:developers, logs, get, banking-platform/n8n-dev*, allow
+      groups:
+        - "developers"
+
+  # Resource whitelist for banking compliance
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: "rbac.authorization.k8s.io"
+      kind: ClusterRole
+    - group: "rbac.authorization.k8s.io"
+      kind: ClusterRoleBinding
+
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Secret
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: "apps"
+      kind: Deployment
+    - group: "apps"
+      kind: StatefulSet
+    - group: "apps"
+      kind: ReplicaSet
+    - group: "networking.k8s.io"
+      kind: Ingress
+    - group: "networking.k8s.io"
+      kind: NetworkPolicy
+    - group: "policy"
+      kind: PodDisruptionBudget
+    - group: "monitoring.coreos.com"
+      kind: ServiceMonitor
+    - group: "monitoring.coreos.com"
+      kind: PrometheusRule
+
+  # Sync windows for banking operations
+  syncWindows:
+    # Production deployment window
+    - kind: allow
+      schedule: "0 2-4 * * MON-FRI"
+      duration: 2h
+      applications:
+        - "n8n-production"
+      manualSync: false
+
+    # Maintenance window
+    - kind: deny
+      schedule: "0 0-6 * * SAT,SUN"
+      duration: 6h
+      applications:
+        - "*"
+      manualSync: true
+
+  # Signature keys for signed commits (banking requirement)
+  signatureKeys:
+    - keyID: "ABCD1234EFGH5678"
+
+  # Orphaned resources monitoring
+  orphanedResources:
+    warn: true
