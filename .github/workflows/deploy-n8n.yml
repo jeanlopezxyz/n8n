@@ -51,6 +51,11 @@ jobs:
           # Create base directory
           sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}
 
+          # Clean up n8n directories to reset permissions (keep data for postgres/redis)
+          sudo rm -rf ${{ env.DEPLOYMENT_PATH }}/n8n_main 2>/dev/null || true
+          sudo rm -rf ${{ env.DEPLOYMENT_PATH }}/n8n_worker1 2>/dev/null || true
+          sudo rm -rf ${{ env.DEPLOYMENT_PATH }}/n8n_worker2 2>/dev/null || true
+
           # Create data directories for volumes
           sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/postgres_data
           sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/postgres_backups
@@ -61,8 +66,13 @@ jobs:
           sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/n8n_worker1
           sudo -u n8n mkdir -p ${{ env.DEPLOYMENT_PATH }}/n8n_worker2
 
-          # Set proper permissions
-          sudo chown -R n8n:n8n ${{ env.DEPLOYMENT_PATH }}
+          # Set proper permissions - n8n containers run as UID 1000 (node user)
+          sudo chown -R 1000:1000 ${{ env.DEPLOYMENT_PATH }}/n8n_*
+          sudo chmod -R 755 ${{ env.DEPLOYMENT_PATH }}/n8n_*
+
+          # Keep postgres and redis directories owned by n8n user
+          sudo chown -R n8n:n8n ${{ env.DEPLOYMENT_PATH }}/postgres_*
+          sudo chown -R n8n:n8n ${{ env.DEPLOYMENT_PATH }}/redis_*
 
           # Create podman network if it doesn't exist
           sudo -u n8n podman network exists n8n-network || sudo -u n8n podman network create n8n-network
