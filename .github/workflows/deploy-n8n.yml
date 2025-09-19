@@ -1,4 +1,4 @@
-name: Deploy n8n Production Stack
+name: Build and Deploy n8n Production Stack
 
 on:
   push:
@@ -6,8 +6,10 @@ on:
       - main
       - master
     paths:
-      - 'docker-compose*.yml'
+      - 'docker/**'
+      - 'packages/**'
       - '.github/workflows/deploy-n8n.yml'
+      - 'docker-compose*.yml'
 
   workflow_dispatch:
     inputs:
@@ -21,12 +23,80 @@ on:
           - staging
 
 env:
-  N8N_IMAGE: docker.io/n8nio/n8n:latest
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
   DEPLOYMENT_PATH: /opt/n8n
 
 jobs:
+  build-and-push:
+    name: Build and Push to GitHub Registry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build n8n
+        run: pnpm build
+
+      - name: Create compiled artifacts
+        run: |
+          mkdir -p compiled
+          cp -r packages compiled/
+          cp package.json compiled/
+          cp pnpm-lock.yaml compiled/
+          cp pnpm-workspace.yaml compiled/
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/images/n8n/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NODE_VERSION=22
+            N8N_VERSION=${{ github.sha }}
+
   deploy:
     name: Deploy n8n Production Stack
+    needs: build-and-push
     runs-on: [self-hosted, Linux, X64]
 
     steps:
@@ -39,7 +109,11 @@ jobs:
           echo "Current user: $(whoami)"
           echo "Deployment path: ${{ env.DEPLOYMENT_PATH }}"
           echo "Environment: ${{ inputs.environment || 'production' }}"
-          echo "Image: ${{ env.N8N_IMAGE }}"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo -u n8n podman login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
       - name: Create deployment directory and network
         run: |
@@ -63,7 +137,7 @@ jobs:
       - name: Pull latest images
         run: |
           echo "📥 Pulling latest images..."
-          sudo -u n8n podman pull ${{ env.N8N_IMAGE }}
+          sudo -u n8n podman pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           sudo -u n8n podman pull docker.io/library/postgres:15-alpine
           sudo -u n8n podman pull docker.io/library/redis:7-alpine
 
@@ -137,7 +211,7 @@ jobs:
             -e GENERIC_TIMEZONE="America/Mexico_City" \
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_data/worker1:/home/node/.n8n:Z \
             --restart always \
-            ${{ env.N8N_IMAGE }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
             n8n worker
 
       - name: Start n8n Worker 2
@@ -161,7 +235,7 @@ jobs:
             -e GENERIC_TIMEZONE="America/Mexico_City" \
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_data/worker2:/home/node/.n8n:Z \
             --restart always \
-            ${{ env.N8N_IMAGE }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
             n8n worker
 
       - name: Start n8n Main
@@ -200,7 +274,7 @@ jobs:
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_data/main:/home/node/.n8n:Z \
             -p 5678:5678 \
             --restart always \
-            ${{ env.N8N_IMAGE }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
       - name: Start Backup Service
         run: |
