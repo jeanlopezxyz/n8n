@@ -1,16 +1,6 @@
-name: Deploy n8n with PostgreSQL
+name: Deploy n8n with Redis (High Availability)
 
 on:
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - 'docker/**'
-      - 'packages/**'
-      - 'Dockerfile'
-      - '.github/workflows/deploy.yml'
-
   workflow_dispatch:
     inputs:
       environment:
@@ -32,62 +22,10 @@ env:
 
 jobs:
   # ============================================
-  # PREPARE
-  # ============================================
-  prepare:
-    name: 🎯 Prepare Deployment
-    runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.image.outputs.image }}
-      version: ${{ steps.image.outputs.version }}
-
-    steps:
-      - name: Determine image to use
-        id: image
-        run: |
-          # Use official n8n image from Docker Hub
-          VERSION="latest"
-          IMAGE="docker.io/n8nio/n8n:${VERSION}"
-
-          echo "📦 Using official n8n image: ${IMAGE}"
-          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-
-  # ============================================
-  # SECURITY SCAN (Optional)
-  # ============================================
-  scan:
-    name: 🔒 Security Scan
-    needs: prepare
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      security-events: write
-
-    steps:
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
-        continue-on-error: true
-        with:
-          image-ref: ${{ needs.prepare.outputs.image }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Upload Trivy results
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-  # ============================================
-  # DEPLOY TO PRODUCTION
+  # DEPLOY WITH REDIS
   # ============================================
   deploy:
-    name: 🚀 Deploy n8n
-    needs: [prepare, scan]
-    if: always() && needs.prepare.result == 'success'
+    name: 🚀 Deploy n8n with Redis
     runs-on: [self-hosted]
     environment: ${{ inputs.environment || 'production' }}
 
@@ -98,39 +36,24 @@ jobs:
 
           # Check disk space
           echo "💾 Disk space available:"
-          df -h /var/lib/containers 2>/dev/null || df -h /var/lib/docker 2>/dev/null || df -h /
+          df -h /
 
-          # Check current volume usage if exists
+          # Check container runtime
           if command -v podman &> /dev/null; then
             CONTAINER_RUNTIME="podman"
           else
             CONTAINER_RUNTIME="docker"
           fi
 
-          echo "📦 Current volumes:"
-          $CONTAINER_RUNTIME volume ls || true
+          echo "📦 Using container runtime: $CONTAINER_RUNTIME"
 
-          # Show volume sizes if they exist
-          for vol in n8n-data n8n-postgres-data; do
-            if $CONTAINER_RUNTIME volume inspect $vol &>/dev/null; then
-              echo "Volume $vol info:"
-              $CONTAINER_RUNTIME volume inspect $vol | grep -E '(Mountpoint|Size|CreatedAt)' || true
-              echo "Actual disk usage:"
-              du -sh $($CONTAINER_RUNTIME volume inspect $vol --format '{{.Mountpoint}}') 2>/dev/null || echo "Cannot determine size"
-            fi
-          done
-
-      - name: Deploy with Podman
+      - name: Deploy Stack with Redis
         run: |
-          echo "🚀 Starting n8n deployment..."
+          echo "🚀 Starting n8n deployment with Redis..."
 
           # Configuration
-          IMAGE="${{ needs.prepare.outputs.image }}"
           CONTAINER_RUNTIME="podman"
-
-          # Volume size limits (optional - uncomment to enable)
-          # POSTGRES_VOLUME_SIZE="10G"  # PostgreSQL data
-          # N8N_VOLUME_SIZE="50G"        # n8n workflows and data
+          N8N_IMAGE="docker.io/n8nio/n8n:latest"
 
           # Check if running as correct user
           if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
@@ -142,32 +65,18 @@ jobs:
 
           # Stop existing containers
           echo "🛑 Stopping existing containers..."
-          $SUDO_PREFIX $CONTAINER_RUNTIME stop n8n 2>/dev/null || true
-          $SUDO_PREFIX $CONTAINER_RUNTIME stop n8n-postgres 2>/dev/null || true
-          $SUDO_PREFIX $CONTAINER_RUNTIME rm -f n8n n8n-postgres 2>/dev/null || true
+          $SUDO_PREFIX $CONTAINER_RUNTIME stop n8n n8n-postgres redis 2>/dev/null || true
+          $SUDO_PREFIX $CONTAINER_RUNTIME rm -f n8n n8n-postgres redis 2>/dev/null || true
 
           # Create network
           echo "🌐 Creating network..."
           $SUDO_PREFIX $CONTAINER_RUNTIME network create n8n-network 2>/dev/null || true
 
-          # Create volumes if they don't exist
+          # Create volumes
           echo "📁 Creating volumes..."
-
-          # PostgreSQL volume
-          if ! $SUDO_PREFIX $CONTAINER_RUNTIME volume exists n8n-postgres-data 2>/dev/null; then
-            echo "Creating PostgreSQL volume (unlimited size by default)..."
-            $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-postgres-data
-            # To limit size on creation (requires specific storage driver):
-            # $SUDO_PREFIX $CONTAINER_RUNTIME volume create --opt o=size=${POSTGRES_VOLUME_SIZE} n8n-postgres-data
-          fi
-
-          # n8n data volume
-          if ! $SUDO_PREFIX $CONTAINER_RUNTIME volume exists n8n-data 2>/dev/null; then
-            echo "Creating n8n data volume (unlimited size by default)..."
-            $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-data
-            # To limit size on creation (requires specific storage driver):
-            # $SUDO_PREFIX $CONTAINER_RUNTIME volume create --opt o=size=${N8N_VOLUME_SIZE} n8n-data
-          fi
+          $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-postgres-data 2>/dev/null || true
+          $SUDO_PREFIX $CONTAINER_RUNTIME volume create n8n-data 2>/dev/null || true
+          $SUDO_PREFIX $CONTAINER_RUNTIME volume create redis-data 2>/dev/null || true
 
           # Deploy PostgreSQL
           echo "🗄️ Starting PostgreSQL..."
@@ -181,16 +90,26 @@ jobs:
             -v n8n-postgres-data:/var/lib/postgresql/data \
             docker.io/postgres:15-alpine
 
-          # Wait for PostgreSQL
-          echo "⏳ Waiting for PostgreSQL..."
-          sleep 15
+          # Deploy Redis
+          echo "🔴 Starting Redis..."
+          $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
+            --name redis \
+            --network n8n-network \
+            --restart unless-stopped \
+            -v redis-data:/data \
+            docker.io/redis:7-alpine \
+            redis-server --appendonly yes
 
-          # Pull official image (no login needed for Docker Hub public images)
-          echo "📥 Pulling official n8n image..."
-          $SUDO_PREFIX $CONTAINER_RUNTIME pull $IMAGE
+          # Wait for services
+          echo "⏳ Waiting for services to be ready..."
+          sleep 20
 
-          # Deploy n8n
-          echo "🚀 Starting n8n..."
+          # Pull n8n image
+          echo "📥 Pulling n8n image..."
+          $SUDO_PREFIX $CONTAINER_RUNTIME pull $N8N_IMAGE
+
+          # Deploy n8n with queue mode
+          echo "🚀 Starting n8n with queue mode..."
           $SUDO_PREFIX $CONTAINER_RUNTIME run -d \
             --name n8n \
             --network n8n-network \
@@ -206,13 +125,16 @@ jobs:
             -e N8N_HOST="${{ secrets.N8N_HOST || 'localhost' }}" \
             -e N8N_PORT=5678 \
             -e N8N_PROTOCOL="http" \
-            -e EXECUTIONS_MODE="regular" \
+            -e EXECUTIONS_MODE="queue" \
+            -e QUEUE_BULL_REDIS_HOST="redis" \
+            -e QUEUE_BULL_REDIS_PORT="6379" \
             -e N8N_RUNNERS_ENABLED="true" \
+            -e OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS="true" \
             -e N8N_BLOCK_ENV_ACCESS_IN_NODE="true" \
             -e N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS="true" \
             -e GENERIC_TIMEZONE="America/Santiago" \
             -v n8n-data:/home/node/.n8n \
-            $IMAGE
+            $N8N_IMAGE
 
           echo "✅ Deployment completed!"
 
@@ -225,9 +147,9 @@ jobs:
     runs-on: [self-hosted]
 
     steps:
-      - name: Check PostgreSQL
+      - name: Check all services
         run: |
-          echo "🔍 Checking PostgreSQL..."
+          echo "🔍 Checking services health..."
 
           # Check if running as correct user
           if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
@@ -236,6 +158,8 @@ jobs:
             SUDO_PREFIX=""
           fi
 
+          # Check PostgreSQL
+          echo "🗄️ Checking PostgreSQL..."
           for i in {1..10}; do
             if $SUDO_PREFIX podman exec n8n-postgres pg_isready -U n8n 2>/dev/null; then
               echo "✅ PostgreSQL is ready"
@@ -246,20 +170,30 @@ jobs:
             fi
           done
 
-      - name: Check n8n Application
-        run: |
-          echo "🔍 Checking n8n..."
+          # Check Redis
+          echo "🔴 Checking Redis..."
+          for i in {1..10}; do
+            if $SUDO_PREFIX podman exec redis redis-cli ping 2>/dev/null | grep -q PONG; then
+              echo "✅ Redis is ready"
+              break
+            else
+              echo "⏳ Attempt $i/10 - Redis not ready..."
+              sleep 5
+            fi
+          done
 
+          # Check n8n
+          echo "🔍 Checking n8n..."
           URL="http://localhost:${{ env.APP_PORT }}"
 
-          for i in {1..10}; do
+          for i in {1..15}; do
             if curl -f -s -o /dev/null -w "%{http_code}" "$URL/healthz" | grep -q "200\|204"; then
               echo "✅ n8n is healthy"
-              echo "🎉 Deployment successful!"
+              echo "🎉 All services are running!"
               echo "📦 Access n8n at: $URL"
               exit 0
             else
-              echo "⏳ Attempt $i/10 - Waiting for n8n..."
+              echo "⏳ Attempt $i/15 - Waiting for n8n..."
               sleep 10
             fi
           done
@@ -267,7 +201,7 @@ jobs:
           echo "❌ Health check failed"
           exit 1
 
-      - name: Show deployment status
+      - name: Show stack status
         if: always()
         run: |
           if [[ "$(whoami)" != "${{ env.APP_USER }}" ]]; then
@@ -281,7 +215,7 @@ jobs:
 
           echo ""
           echo "💾 Volume usage:"
-          for vol in n8n-data n8n-postgres-data; do
+          for vol in n8n-data n8n-postgres-data redis-data; do
             if $SUDO_PREFIX podman volume exists $vol 2>/dev/null; then
               echo "Volume: $vol"
               MOUNT_POINT=$($SUDO_PREFIX podman volume inspect $vol --format '{{.Mountpoint}}')
@@ -289,46 +223,51 @@ jobs:
             fi
           done
 
-          echo ""
-          echo "📊 System disk usage:"
-          df -h / | grep -E '(Filesystem|^/)'
-
   # ============================================
   # SUMMARY
   # ============================================
   summary:
     name: 📊 Deployment Summary
-    needs: [prepare, deploy, health-check]
+    needs: [deploy, health-check]
     if: always()
     runs-on: ubuntu-latest
 
     steps:
       - name: Generate summary
         run: |
-          echo "# 📊 n8n Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "# 📊 n8n High Availability Deployment" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "## 📦 Image" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Using official n8n image" >> $GITHUB_STEP_SUMMARY
-          echo "- Image: ${{ needs.prepare.outputs.image }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Version: ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-
+          echo "## 🏗️ Stack Components" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ PostgreSQL 15 (Database)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Redis 7 (Queue & Cache)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ n8n (Latest with Queue Mode)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🚀 Deployment" >> $GITHUB_STEP_SUMMARY
+
+          echo "## 🚀 Deployment Status" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ needs.deploy.result }}" == "success" ]]; then
-            echo "✅ Successfully deployed" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Stack deployed successfully" >> $GITHUB_STEP_SUMMARY
             echo "- Environment: ${{ inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
             echo "- Port: ${{ env.APP_PORT }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Mode: Queue (High Availability)" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Deployment failed" >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## ✅ Health Check" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Health Status" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ needs.health-check.result }}" == "success" ]]; then
             echo "✅ All services healthy" >> $GITHUB_STEP_SUMMARY
             echo "- PostgreSQL: Running" >> $GITHUB_STEP_SUMMARY
+            echo "- Redis: Running" >> $GITHUB_STEP_SUMMARY
             echo "- n8n: Running" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Health check failed" >> $GITHUB_STEP_SUMMARY
           fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎯 Benefits of Queue Mode" >> $GITHUB_STEP_SUMMARY
+          echo "- Better performance for heavy workflows" >> $GITHUB_STEP_SUMMARY
+          echo "- Improved reliability with job persistence" >> $GITHUB_STEP_SUMMARY
+          echo "- Horizontal scaling capability" >> $GITHUB_STEP_SUMMARY
+          echo "- Background job processing" >> $GITHUB_STEP_SUMMARY
