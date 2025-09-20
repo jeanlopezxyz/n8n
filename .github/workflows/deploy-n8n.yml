@@ -121,7 +121,7 @@ jobs:
             -e PGDATA=/var/lib/postgresql/data/pgdata \
             -v ${{ env.DEPLOYMENT_PATH }}/postgres_data:/var/lib/postgresql/data \
             -v ${{ env.DEPLOYMENT_PATH }}/postgres_backups:/backups \
-            -p 5432:5432 \
+            -p 127.0.0.1:5432:5432 \
             --restart always \
             docker.io/library/postgres:15-alpine
 
@@ -146,7 +146,7 @@ jobs:
             --memory=512m \
             --memory-reservation=256m \
             -v ${{ env.DEPLOYMENT_PATH }}/redis_data:/data \
-            -p 6379:6379 \
+            -p 127.0.0.1:6379:6379 \
             --restart always \
             docker.io/library/redis:7-alpine \
             redis-server --appendonly yes --maxmemory 400mb --maxmemory-policy allkeys-lru
@@ -264,7 +264,7 @@ jobs:
             -e N8N_METRICS_INCLUDE_DEFAULT=true \
             -e N8N_PAYLOAD_SIZE_MAX="${N8N_PAYLOAD_SIZE_MAX:-16}" \
             -v ${{ env.DEPLOYMENT_PATH }}/n8n_files:/files \
-            -p 5678:5678 \
+            -p 0.0.0.0:5678:5678 \
             --restart always \
             docker.io/n8nio/n8n:latest
 
